@@ -12,29 +12,35 @@ A full machine-learning pipeline that predicts **imminent handover events** (`ha
 | Label | `handover_soon = 1` if a successful HO occurs within the next 3 steps |
 | Dataset | 27,000 rows · 15 UEs · 1,800 s simulation |
 | Simulator | v3 — 3GPP UMa LOS/NLOS, Random Waypoint mobility, A3/A4/A5 events |
-| Models | Logistic Regression · Random Forest · LSTM |
-| Best model | Random Forest (F1 = 0.521, ROC-AUC = 0.909) |
+| Models | LR · RF · XGBoost · LSTM · GRU · Stacking Ensemble |
+| Best F1 | Random Forest (F1 = 0.521) |
+| Best AUC | XGBoost (ROC-AUC = 0.912) — promoted as **champion** |
+| MLOps | MLflow experiment tracking · DVC pipeline · GitHub Actions CI |
 
 ---
 
 ## Repository Structure
 
 ```
-├── simulate.py              # Phase 1 — LTE network simulation (v3)
-├── run_pipeline.py          # Master runner (phases 2–4)
+├── simulate.py                   # Phase 1 — LTE network simulation (v3)
+├── run_pipeline.py               # Master runner (phases 2–4)
 ├── requirements.txt
+├── dvc.yaml                      # DVC pipeline definition
 │
 ├── src/
-│   ├── radio_model.py       # 3GPP UMa path loss, shadow/fast fading, SINR, CQI
-│   ├── mobility.py          # Random Waypoint UE mobility (pedestrian + vehicle)
-│   ├── handover_logic.py    # A3/A4/A5 events, L3 filter, TTT, HO failure, ping-pong
-│   ├── features.py          # Phase 2 — feature engineering + train/val/test split
-│   ├── models.py            # Phase 3 — Logistic Regression, Random Forest, LSTM
-│   └── evaluate.py          # Phase 4 — metrics, ROC curves, confusion matrices
+│   ├── radio_model.py            # 3GPP UMa path loss, shadow/fast fading, SINR, CQI
+│   ├── mobility.py               # Random Waypoint UE mobility (pedestrian + vehicle)
+│   ├── handover_logic.py         # A3/A4/A5 events, L3 filter, TTT, HO failure, ping-pong
+│   ├── features.py               # Phase 2 — feature engineering + train/val/test split
+│   ├── models.py                 # Phase 3 — all 6 models + MLflow logging
+│   └── evaluate.py               # Phase 4 — metrics, ROC curves, confusion matrices
+│
+├── scripts/
+│   └── promote_best_model.py     # Queries MLflow, copies best model to models/champion/
 │
 ├── data/
-│   ├── raw/dataset.csv      # 27k-row simulated dataset
-│   └── processed/           # train/val/test splits + meta.json
+│   ├── raw/dataset.csv           # 27k-row simulated dataset
+│   └── processed/                # train/val/test splits + meta.json
 │
 ├── notebooks/
 │   ├── 01_data_generation.ipynb
@@ -43,14 +49,30 @@ A full machine-learning pipeline that predicts **imminent handover events** (`ha
 │   ├── 04_evaluation.ipynb
 │   ├── 05_dashboard_preview.ipynb
 │   ├── 06_simulation_realism.ipynb   ← v3 radio model analysis
-│   └── 07_model_impact.ipynb         ← v2 vs v3 model comparison
+│   └── 07_model_impact.ipynb         ← model comparison
 │
-├── models/                  # Saved model artifacts (.pkl / .pt)
-├── reports/                 # Evaluation report + plots
+├── models/
+│   ├── logistic_regression.pkl
+│   ├── random_forest.pkl
+│   ├── xgboost.pkl
+│   ├── lstm.pt
+│   ├── gru.pt
+│   ├── stacking_ensemble.pkl
+│   ├── scaler.pkl
+│   ├── mlflow_run_ids.json           # Maps model name → MLflow run ID
+│   └── champion/
+│       ├── xgboost.pkl               # Copy of the best-AUC model
+│       └── metadata.json             # Name, AUC, F1, promotion timestamp
+│
+├── mlruns/                           # MLflow local tracking store (auto-created)
+├── reports/                          # evaluation.txt + roc_curves.png + confusion_matrices.png
 ├── docs/
-│   └── technical_report.md  # Full write-up
+│   └── technical_report.md          # Full write-up
+├── .github/
+│   └── workflows/
+│       └── ci.yml                    # GitHub Actions CI
 └── app/
-    └── dashboard.py         # Phase 5 — Streamlit dashboard
+    └── dashboard.py                  # Phase 5 — Streamlit dashboard
 ```
 
 ---
@@ -72,7 +94,10 @@ python simulate.py
 # 4. Run full pipeline (feature engineering → training → evaluation)
 python run_pipeline.py
 
-# 5. Launch dashboard
+# 5. Promote best model to champion
+python scripts/promote_best_model.py
+
+# 6. Launch dashboard
 streamlit run app/dashboard.py
 ```
 
@@ -80,7 +105,7 @@ Run individual phases:
 
 ```bash
 python run_pipeline.py --phase 2   # feature engineering only
-python run_pipeline.py --phase 3   # training only
+python run_pipeline.py --phase 3   # training only (all 6 models)
 python run_pipeline.py --phase 4   # evaluation only
 ```
 
@@ -162,30 +187,179 @@ Temporal 70/15/15 split · StandardScaler fit on train only · no future leakage
 
 ### Phase 3 — Modeling (`src/models.py`)
 
+Six models are trained in sequence. Each run is logged to MLflow automatically (see [MLflow](#mlflow-experiment-tracking)).
+
 | Model | Key settings |
 |-------|-------------|
 | Logistic Regression | C=0.5, saga solver, class_weight balanced |
 | Random Forest | 300 trees, max_depth=12, class_weight balanced |
+| XGBoost | n_estimators=400, max_depth=6, lr=0.05, early stopping (20 rounds) |
 | LSTM | 2 layers × 64 hidden, seq_len=10, WeightedRandomSampler |
+| GRU | 2 layers × 64 hidden, seq_len=10 — lighter recurrent alternative to LSTM |
+| Stacking Ensemble | meta-LR trained on val-set probs from XGBoost + RF + LSTM |
+
+**Stacking details:** the meta-learner receives three probability columns (one per base model) aligned to the same row subset. LSTM/GRU drop the first `SEQ_LEN−1` rows per UE (no full look-back window); `_build_seq_row_indices()` reconstructs those rows so the sklearn models cover the exact same subset when building meta-features.
 
 ### Phase 4 — Evaluation (`src/evaluate.py`)
 
 | Model | Precision | Recall | F1 | ROC-AUC |
 |-------|-----------|--------|----|---------|
 | Logistic Regression | 0.315 | 0.852 | 0.460 | 0.894 |
-| **Random Forest** | **0.408** | **0.720** | **0.521** | **0.909** |
-| LSTM | 0.320 | 0.827 | 0.462 | 0.876 |
+| **Random Forest** | 0.408 | 0.720 | **0.521** | 0.909 |
+| XGBoost | 0.409 | 0.684 | 0.512 | **0.912** ← champion |
+| LSTM | 0.319 | 0.832 | 0.461 | 0.887 |
+| GRU | 0.318 | 0.843 | 0.462 | 0.882 |
+| Stacking Ensemble | 0.517 | 0.322 | 0.397 | 0.911 |
 
-**Random Forest** wins on F1 and AUC. **Logistic Regression** maximises recall at the cost of false positives. **LSTM** captures temporal RSRP trajectories without manual feature engineering.
+**Random Forest** maximises F1. **XGBoost** wins on ROC-AUC and is promoted as the champion model. **Stacking Ensemble** achieves the highest precision of all six, trading recall for fewer false alarms. **LSTM/GRU** capture raw temporal RSRP trajectories without manual feature engineering.
 
 ### Phase 5 — Dashboard (`app/dashboard.py`)
 
-Interactive Streamlit app with:
-- Real-time KPI charts (RSRP, SINR, RSRQ, CQI) with handover markers
-- Handover event timeline
-- Per-UE risk heatmap + gauge
-- UE mobility map with BS positions
-- Model comparison table
+Interactive Streamlit app with six tabs:
+
+| Tab | Content |
+|-----|---------|
+| 📊 Radio KPIs | RSRP, SINR, RSRQ, CQI charts with handover markers |
+| 🔁 HO Timeline | Scatter of handover events by UE and target cell |
+| ⚠️ Risk | Per-UE risk heatmap + gauge for the selected model |
+| 📋 Model Comparison | Metrics table parsed from `reports/evaluation.txt` |
+| 🧪 MLflow Runs | Live query of `mlruns/` experiment — val F1, test AUC, status |
+| 🗺️ Mobility Map | UE position tracks + base station markers |
+
+A **champion model banner** at the top of the dashboard reads `models/champion/metadata.json` and displays the promoted model name, AUC, and promotion timestamp.
+
+---
+
+## MLflow Experiment Tracking
+
+MLflow is an **optional** dependency — the pipeline runs normally without it. When installed, every training run is automatically logged.
+
+### Setup
+
+```bash
+pip install mlflow   # already in requirements.txt
+```
+
+MLflow uses a **local file-store** by default (no server required):
+
+```
+mlruns/                  ← created automatically on first run
+└── lte_handover_prediction/
+    ├── <run-id-lr>/
+    ├── <run-id-rf>/
+    ├── <run-id-xgb>/
+    ├── <run-id-lstm>/
+    ├── <run-id-gru>/
+    └── <run-id-stacking>/
+```
+
+### What gets logged
+
+| Phase | What is logged |
+|-------|---------------|
+| Training (phase 3) | Hyperparameters, validation F1 score, serialised model artifact |
+| Evaluation (phase 4) | Test precision, recall, F1, ROC-AUC; `roc_curves.png` and `confusion_matrices.png` as artifacts |
+
+Run IDs are saved to `models/mlflow_run_ids.json` during training so that the evaluation phase can **resume the same run** and append test metrics rather than create a second run per model.
+
+### Viewing runs in the browser
+
+```bash
+# From the project root — opens http://localhost:5000
+mlflow ui
+```
+
+Then navigate to the **lte_handover_prediction** experiment to compare runs side-by-side, inspect logged parameters, and download plot artifacts.
+
+Alternatively, view runs directly in the **Streamlit dashboard** under the 🧪 MLflow Runs tab (no separate server needed).
+
+### Querying runs from Python
+
+```python
+import mlflow
+
+mlflow.set_tracking_uri("mlruns/")          # or absolute path
+client = mlflow.tracking.MlflowClient()
+
+exp = client.get_experiment_by_name("lte_handover_prediction")
+runs = client.search_runs(
+    experiment_ids=[exp.experiment_id],
+    order_by=["metrics.test_roc_auc DESC"],
+)
+
+for r in runs:
+    name = r.data.tags.get("mlflow.runName")
+    auc  = r.data.metrics.get("test_roc_auc")
+    f1   = r.data.metrics.get("test_f1")
+    print(f"{name:<25} AUC={auc:.4f}  F1={f1:.4f}")
+```
+
+### Switching to a database or remote tracking server
+
+The local file-store is convenient for development. For a shared team setup, change the tracking URI before running the pipeline:
+
+```bash
+# SQLite (single-machine, no server)
+export MLFLOW_TRACKING_URI=sqlite:///mlflow.db
+
+# Remote MLflow server
+export MLFLOW_TRACKING_URI=http://your-mlflow-server:5000
+```
+
+No code changes are needed — `src/models.py` and `src/evaluate.py` pick up the env variable automatically.
+
+---
+
+## Champion Model & Model Promotion
+
+After evaluation, `scripts/promote_best_model.py` selects the run with the highest `test_roc_auc` and copies its artifact to `models/champion/`:
+
+```bash
+python scripts/promote_best_model.py
+```
+
+```
+models/champion/
+├── xgboost.pkl          # copy of the winning model
+└── metadata.json        # { model_name, run_id, test_roc_auc, test_f1, promoted_at }
+```
+
+The dashboard reads `metadata.json` on startup and displays the champion banner. If MLflow is not available, the script falls back to parsing `reports/evaluation.txt`.
+
+---
+
+## DVC Pipeline
+
+[DVC](https://dvc.org) tracks data and model artifacts and defines the four pipeline stages in `dvc.yaml`:
+
+| Stage | Command | Inputs | Outputs |
+|-------|---------|--------|---------|
+| `simulate` | `python simulate.py` | `src/radio_model.py`, `src/mobility.py`, `src/handover_logic.py` | `data/raw/dataset.csv` |
+| `features` | `python run_pipeline.py --phase 2` | `src/features.py`, `data/raw/dataset.csv` | `data/processed/`, `models/scaler.pkl` |
+| `train` | `python run_pipeline.py --phase 3` | `src/models.py`, `data/processed/` | `models/*.pkl`, `models/*.pt` |
+| `evaluate` | `python run_pipeline.py --phase 4` | `src/evaluate.py`, `data/processed/test.csv`, `models/` | `reports/` |
+
+Run the full pipeline (skipping simulate if data already exists):
+
+```bash
+pip install dvc
+dvc repro features train evaluate
+```
+
+DVC detects which stages are stale (inputs changed) and only re-runs those. Run `dvc dag` to visualise the dependency graph.
+
+---
+
+## CI/CD — GitHub Actions
+
+`.github/workflows/ci.yml` runs on every push and pull request to `main`:
+
+1. **Install dependencies** — `pip install -r requirements.txt && pip install dvc`
+2. **Init DVC** — `dvc init --no-scm` (required on a clean runner; `--no-scm` skips Git hook setup)
+3. **Pull cached data** — `dvc pull --run-cache || true` (no-op if no remote is configured)
+4. **Reproduce pipeline** — `dvc repro features train evaluate`
+5. **Promote champion** — `python scripts/promote_best_model.py`
+6. **Upload artifacts** — `reports/` and `models/champion/metadata.json` as GitHub Actions artifacts (retained 30 days)
 
 ---
 
@@ -199,9 +373,11 @@ Interactive Streamlit app with:
 ## Requirements
 
 - Python 3.10+
-- pandas · numpy · scikit-learn · torch · streamlit · plotly · seaborn · joblib · statsmodels
+- pandas · numpy · scikit-learn · xgboost · torch · streamlit · plotly · seaborn · joblib · statsmodels · mlflow · dvc
 
 See [`requirements.txt`](requirements.txt) for pinned versions.
+
+> **macOS note:** PyTorch and XGBoost both initialise OpenMP threads. On macOS with Python 3.12+ this can cause a segfault when both are loaded in the same process. The pipeline sets `OMP_NUM_THREADS=1` before importing torch to prevent this — no action needed from the user.
 
 ---
 
