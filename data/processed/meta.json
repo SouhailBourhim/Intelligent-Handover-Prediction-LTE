@@ -6,10 +6,14 @@
     "cqi",
     "rsrp_neighbor",
     "rsrq_neighbor",
+    "l3_rsrp_serving",
+    "l3_rsrp_neighbor",
     "ue_speed",
     "pos_x",
     "pos_y",
     "rsrp_diff",
+    "cell_load_pct",
+    "los_flag",
     "rsrp_serving_lag1",
     "rsrp_serving_lag2",
     "rsrp_serving_lag3",
@@ -28,6 +32,12 @@
     "rsrq_neighbor_lag1",
     "rsrq_neighbor_lag2",
     "rsrq_neighbor_lag3",
+    "l3_rsrp_serving_lag1",
+    "l3_rsrp_serving_lag2",
+    "l3_rsrp_serving_lag3",
+    "l3_rsrp_neighbor_lag1",
+    "l3_rsrp_neighbor_lag2",
+    "l3_rsrp_neighbor_lag3",
     "rsrp_serving_roll3_mean",
     "rsrp_serving_roll5_mean",
     "rsrq_serving_roll3_mean",
@@ -40,6 +50,10 @@
     "rsrp_neighbor_roll5_mean",
     "rsrq_neighbor_roll3_mean",
     "rsrq_neighbor_roll5_mean",
+    "l3_rsrp_serving_roll3_mean",
+    "l3_rsrp_serving_roll5_mean",
+    "l3_rsrp_neighbor_roll3_mean",
+    "l3_rsrp_neighbor_roll5_mean",
     "rsrp_serving_roll3_std",
     "rsrp_serving_roll5_std",
     "rsrq_serving_roll3_std",
@@ -52,6 +66,10 @@
     "rsrp_neighbor_roll5_std",
     "rsrq_neighbor_roll3_std",
     "rsrq_neighbor_roll5_std",
+    "l3_rsrp_serving_roll3_std",
+    "l3_rsrp_serving_roll5_std",
+    "l3_rsrp_neighbor_roll3_std",
+    "l3_rsrp_neighbor_roll5_std",
     "rsrp_serving_delta1",
     "rsrp_serving_delta3",
     "rsrq_serving_delta1",
@@ -64,10 +82,10 @@
     "rsrp_neighbor_delta3",
     "rsrq_neighbor_delta1",
     "rsrq_neighbor_delta3",
-    "serving_cell_load",
-    "handover_failure",
-    "ping_pong",
-    "rlf_flag"
+    "l3_rsrp_serving_delta1",
+    "l3_rsrp_serving_delta3",
+    "l3_rsrp_neighbor_delta1",
+    "l3_rsrp_neighbor_delta3"
   ],
   "label": "handover_soon",
   "split": {
@@ -76,6 +94,6 @@
     "test": 4050
   },
   "class_balance": {
-    "train_pos_rate": 0.028
+    "train_pos_rate": 0.1141
   }
 }
