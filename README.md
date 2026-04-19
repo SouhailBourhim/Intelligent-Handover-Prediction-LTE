@@ -13,7 +13,7 @@ A full machine-learning pipeline that predicts **imminent handover events** (`ha
 | Dataset | 27,000 rows · 15 UEs · 1,800 s simulation |
 | Simulator | v3 — 3GPP UMa LOS/NLOS, Random Waypoint mobility, A3/A4/A5 events |
 | Models | Logistic Regression · Random Forest · LSTM |
-| Best model | Random Forest (F1 = 0.672, ROC-AUC = 0.992) |
+| Best model | Random Forest (F1 = 0.521, ROC-AUC = 0.909) |
 
 ---
 
@@ -148,7 +148,7 @@ Simulates a 1000×1000 m LTE network using three modules in `src/`:
 
 ### Phase 2 — Feature Engineering (`src/features.py`)
 
-From 26 raw columns → **71 engineered features**:
+From 26 raw columns → **86 engineered features**:
 
 | Type | Examples |
 |------|---------|
@@ -172,9 +172,9 @@ Temporal 70/15/15 split · StandardScaler fit on train only · no future leakage
 
 | Model | Precision | Recall | F1 | ROC-AUC |
 |-------|-----------|--------|----|---------|
-| Logistic Regression | 0.394 | 0.971 | 0.560 | 0.986 |
-| **Random Forest** | **0.552** | **0.857** | **0.672** | **0.992** |
-| LSTM | 0.458 | 0.912 | 0.610 | 0.987 |
+| Logistic Regression | 0.315 | 0.852 | 0.460 | 0.894 |
+| **Random Forest** | **0.408** | **0.720** | **0.521** | **0.909** |
+| LSTM | 0.320 | 0.827 | 0.462 | 0.876 |
 
 **Random Forest** wins on F1 and AUC. **Logistic Regression** maximises recall at the cost of false positives. **LSTM** captures temporal RSRP trajectories without manual feature engineering.
 

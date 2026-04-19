@@ -309,7 +309,7 @@ No data leakage: all temporal features (lags, rolling windows, deltas) use `shif
 
 ### 5.2 Feature Types
 
-Starting from 16 raw columns, 71 features are produced:
+Starting from 26 raw columns, 86 features are produced:
 
 | Type | Formula | Example |
 |------|---------|---------|
@@ -341,13 +341,13 @@ Temporal 70/15/15 split on unique timestamps (preserves time order — no shuffl
 
 ### 6.1 Class Imbalance Strategy
 
-Positive rate ≈ 2.7% → 37× imbalance. Each model uses a different mechanism:
+Positive rate ≈ 11% → ~8× imbalance. Each model uses a different mechanism:
 
 | Model | Imbalance handling |
 |-------|--------------------|
-| Logistic Regression | `class_weight = {0: 1.0, 1: 37.0}` |
-| Random Forest | `class_weight = {0: 1.0, 1: 37.0}` |
-| LSTM | `WeightedRandomSampler` + `BCEWithLogitsLoss(pos_weight=37)` |
+| Logistic Regression | `class_weight = {0: 1.0, 1: ~8.0}` (computed from train set) |
+| Random Forest | `class_weight = {0: 1.0, 1: ~8.0}` (computed from train set) |
+| LSTM | `WeightedRandomSampler` + `BCEWithLogitsLoss(pos_weight=~8)` |
 
 ### 6.2 Logistic Regression
 
@@ -398,20 +398,20 @@ Evaluated on the held-out test set at threshold 0.5:
 
 | Model | Precision | Recall | **F1** | **ROC-AUC** |
 |-------|-----------|--------|--------|-------------|
-| Logistic Regression | 0.394 | 0.971 | 0.560 | 0.986 |
-| **Random Forest** | **0.552** | **0.857** | **0.672** | **0.992** |
-| LSTM | 0.458 | 0.912 | 0.610 | 0.987 |
+| Logistic Regression | 0.315 | 0.852 | 0.460 | 0.894 |
+| **Random Forest** | **0.408** | **0.720** | **0.521** | **0.909** |
+| LSTM | 0.320 | 0.827 | 0.462 | 0.876 |
 
 ### 7.2 Model Analysis
 
 **Logistic Regression:**  
-Highest recall (0.97) — catches almost all true handovers at the cost of many false positives (precision 0.39). Useful when missed handovers are more costly than unnecessary preparations (conservative deployment). Coefficient analysis confirms `rsrp_diff` and `rsrp_serving_delta3` as dominant linear predictors.
+Highest recall (0.85) at the cost of precision (0.31). Useful when missed handovers are more costly than unnecessary preparations. Coefficient analysis confirms `l3_rsrp_serving_delta3`, `rsrp_diff`, and `sinr_roll5_mean` as dominant linear predictors.
 
 **Random Forest:**  
-Best F1 (0.672) and AUC (0.992). Balances precision and recall well. Feature importances reveal that `rsrp_diff` (serving−neighbour gap), `sinr_roll5_mean`, and `serving_cell_load`-derived features dominate. The ensemble captures the non-linear boundary: HO risk spikes when RSRP gap > 3 dB AND SINR is declining.
+Best F1 (0.521) and AUC (0.909). Feature importances reveal that `l3_rsrp_serving`, `rsrp_diff`, `sinr_roll5_mean`, and `cell_load_pct`-derived features dominate. The ensemble captures the non-linear boundary: HO risk spikes when the L3-filtered RSRP gap exceeds the A3 margin and SINR has been declining for several steps.
 
 **LSTM:**  
-Close to Random Forest (F1 = 0.610). Its advantage is learning the temporal *trajectory* of RSRP degradation directly from sequences, rather than relying on manually crafted delta/rolling features. With more training data or hyperparameter tuning, LSTM would likely outperform the RF.
+Comparable to Logistic Regression (F1=0.462, AUC=0.876). Its advantage is learning the temporal *trajectory* of L3-filtered RSRP degradation directly from sequences, without manually crafted delta features. Further gains are expected with more tuning — the current 30-epoch budget is conservative.
 
 ### 7.3 Threshold Recommendations
 
@@ -445,15 +445,17 @@ Close to Random Forest (F1 = 0.610). Its advantage is learning the temporal *tra
 |--------|-------|
 | Dataset size | 27,000 rows (15 UEs × 1,800 s) |
 | Raw columns | 26 (incl. `l3_rsrp_serving`, `l3_rsrp_neighbor`, `los_flag`, `cell_load_pct`, `rsrp_diff`) |
-| Positive label rate | ~3% |
-| HO failure rate | ~20% |
-| Ping-pong rate | ~2% of HO attempts |
-| Event split | A3: ~68% · A4: ~10% · A5: ~22% |
-| LOS fraction | ~30% of timesteps |
+| Positive label rate | 11.0% |
+| HO attempts | 1,263 (1,009 success · 254 failed) |
+| HO failure rate | 20.1% |
+| Ping-pong rate | 26.9% of HO attempts |
+| Event split | A3: 57.7% · A4: 19.7% · A5: 22.6% |
+| LOS fraction | 21.4% of timesteps |
+| RSRP range | −107.6 to −25.0 dBm |
 | Best model | Random Forest |
-| Best F1 | **0.672** |
-| Best ROC-AUC | **0.992** |
-| Engineered features | 71 (from 26 raw) |
+| Best F1 | **0.521** |
+| Best ROC-AUC | **0.909** |
+| Engineered features | 86 (from 26 raw) |
 
 ---
 

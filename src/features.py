@@ -4,9 +4,17 @@ Phase 2 — Data Preparation & Feature Engineering
 Pipeline:
   1. Load raw CSV
   2. Clean + validate
-  3. Scale numeric features
-  4. Engineer time-based features (lags, rolling stats, deltas)
+  3. Engineer time-based features (lags, rolling stats, deltas)
+  4. Scale numeric features
   5. Save processed dataset — no leakage guaranteed (all shifts are backward-looking)
+
+v3 additions (relative to v2):
+  SIGNAL_COLS now includes l3_rsrp_serving and l3_rsrp_neighbor — the L3-filtered
+  measurements that the handover logic actually uses. Their lags, rolling stats,
+  and deltas give the models visibility into the smoothed channel trajectory.
+
+  SCALE_COLS also picks up cell_load_pct (fractional cell utilisation) and
+  los_flag (0/1 LOS state, z-scored so the model treats it as a soft feature).
 """
 
 import pandas as pd
@@ -26,13 +34,18 @@ LAG_STEPS = [1, 2, 3]            # backward lags for key signals
 ROLL_WINDOWS = [3, 5]            # rolling window sizes (seconds)
 DELTA_STEPS = [1, 3]             # delta over N steps
 
-SIGNAL_COLS = ["rsrp_serving", "rsrq_serving", "sinr", "cqi",
-               "rsrp_neighbor", "rsrq_neighbor"]
+SIGNAL_COLS = [
+    "rsrp_serving", "rsrq_serving", "sinr", "cqi",
+    "rsrp_neighbor", "rsrq_neighbor",
+    "l3_rsrp_serving", "l3_rsrp_neighbor",   # v3: L3-filtered measurements
+]
 
 # Features that enter the scaler (constructed after engineering)
 SCALE_COLS = SIGNAL_COLS + [
     "ue_speed", "pos_x", "pos_y",
-    "rsrp_diff",                  # serving − neighbor gap
+    "rsrp_diff",                  # serving − neighbor gap (raw, from simulate.py)
+    "cell_load_pct",              # v3: serving cell load percentage
+    "los_flag",                   # v3: LOS/NLOS state (0/1, z-scored)
 ] + [
     f"{c}_lag{k}" for c in SIGNAL_COLS for k in LAG_STEPS
 ] + [
@@ -52,7 +65,10 @@ def load_raw(path: Path = RAW_PATH) -> pd.DataFrame:
         "timestamp", "ue_id", "serving_cell_id",
         "rsrp_serving", "rsrq_serving", "sinr", "cqi",
         "best_neighbor_cell_id", "rsrp_neighbor", "rsrq_neighbor",
+        "rsrp_diff",
+        "l3_rsrp_serving", "l3_rsrp_neighbor",   # v3
         "ue_speed", "pos_x", "pos_y",
+        "los_flag", "cell_load_pct",              # v3
         "handover_event", "target_cell_id", "handover_soon",
     }
     missing = required - set(df.columns)
@@ -71,13 +87,17 @@ def clean(df: pd.DataFrame) -> pd.DataFrame:
     df = df.drop_duplicates(subset=["ue_id", "timestamp"])
 
     # Clip to physically valid ranges
-    df["rsrp_serving"]  = df["rsrp_serving"].clip(-140, -30)
-    df["rsrp_neighbor"] = df["rsrp_neighbor"].clip(-140, -30)
-    df["rsrq_serving"]  = df["rsrq_serving"].clip(-20, -3)
-    df["rsrq_neighbor"] = df["rsrq_neighbor"].clip(-20, -3)
-    df["sinr"]          = df["sinr"].clip(-20, 30)
-    df["cqi"]           = df["cqi"].clip(1, 15).astype(int)
-    df["ue_speed"]      = df["ue_speed"].clip(0.5, 25)
+    df["rsrp_serving"]      = df["rsrp_serving"].clip(-140, -25)
+    df["rsrp_neighbor"]     = df["rsrp_neighbor"].clip(-140, -25)
+    df["l3_rsrp_serving"]   = df["l3_rsrp_serving"].clip(-140, -25)   # v3
+    df["l3_rsrp_neighbor"]  = df["l3_rsrp_neighbor"].clip(-140, -25)  # v3
+    df["rsrq_serving"]      = df["rsrq_serving"].clip(-20, -3)
+    df["rsrq_neighbor"]     = df["rsrq_neighbor"].clip(-20, -3)
+    df["sinr"]              = df["sinr"].clip(-20, 30)
+    df["cqi"]               = df["cqi"].clip(1, 15).astype(int)
+    df["ue_speed"]          = df["ue_speed"].clip(0.5, 25)
+    df["cell_load_pct"]     = df["cell_load_pct"].clip(0, 100)        # v3
+    df["los_flag"]          = df["los_flag"].clip(0, 1).astype(int)   # v3
 
     # Fill NaN (none expected, but safety net)
     df[SIGNAL_COLS] = df[SIGNAL_COLS].ffill().bfill()
@@ -91,8 +111,9 @@ def _per_ue(group: pd.DataFrame) -> pd.DataFrame:
     """All temporal features computed within a single UE's timeline."""
     g = group.copy()
 
-    # -- Domain feature: RSRP gap (positive = neighbor is better)
-    g["rsrp_diff"] = g["rsrp_neighbor"] - g["rsrp_serving"]
+    # rsrp_diff is already in the raw v3 dataset (serving − neighbor).
+    # Positive values mean the serving cell is stronger; negative means a
+    # neighbour is better — the natural A3 trigger condition.
 
     for col in SIGNAL_COLS:
         # Lag features (t-k): backward shift → no leakage
