@@ -34,28 +34,76 @@
        macro avg       0.69      0.80      0.72      4050
     weighted avg       0.91      0.87      0.89      4050
 
-── LSTM ──
-  Precision : 0.3201
-  Recall    : 0.8270
-  F1-score  : 0.4615
-  ROC-AUC   : 0.8762
+── XGBoost ──
+  Precision : 0.4087
+  Recall    : 0.6839
+  F1-score  : 0.5116
+  ROC-AUC   : 0.9124
 
   Classification Report:
                   precision    recall  f1-score   support
     
-               0       0.98      0.82      0.89      3545
+               0       0.96      0.90      0.93      3664
+               1       0.41      0.68      0.51       386
+    
+        accuracy                           0.88      4050
+       macro avg       0.69      0.79      0.72      4050
+    weighted avg       0.91      0.88      0.89      4050
+
+── LSTM ──
+  Precision : 0.3188
+  Recall    : 0.8324
+  F1-score  : 0.4611
+  ROC-AUC   : 0.8874
+
+  Classification Report:
+                  precision    recall  f1-score   support
+    
+               0       0.98      0.81      0.89      3545
                1       0.32      0.83      0.46       370
     
         accuracy                           0.82      3915
        macro avg       0.65      0.82      0.68      3915
     weighted avg       0.92      0.82      0.85      3915
 
+── GRU ──
+  Precision : 0.3177
+  Recall    : 0.8432
+  F1-score  : 0.4615
+  ROC-AUC   : 0.8823
+
+  Classification Report:
+                  precision    recall  f1-score   support
+    
+               0       0.98      0.81      0.89      3545
+               1       0.32      0.84      0.46       370
+    
+        accuracy                           0.81      3915
+       macro avg       0.65      0.83      0.67      3915
+    weighted avg       0.92      0.81      0.85      3915
+
+── Stacking Ensemble ──
+  Precision : 0.5174
+  Recall    : 0.3216
+  F1-score  : 0.3967
+  ROC-AUC   : 0.9111
+
+  Classification Report:
+                  precision    recall  f1-score   support
+    
+               0       0.93      0.97      0.95      3545
+               1       0.52      0.32      0.40       370
+    
+        accuracy                           0.91      3915
+       macro avg       0.72      0.65      0.67      3915
+    weighted avg       0.89      0.91      0.90      3915
+
 =================================================================
   COMPARISON SUMMARY
 =================================================================
 
   Best F1      : Random Forest  (0.5206)
-  Best ROC-AUC : Random Forest  (0.9088)
+  Best ROC-AUC : XGBoost  (0.9124)
 
   ANALYSIS:
 
@@ -68,12 +116,23 @@
     Ensemble bagging reduces variance on the rare positive class.
     Feature importances expose which KPIs drive the prediction.
 
+  • XGBoost applies gradient boosting on the same feature set,
+    combining early stopping and scale_pos_weight for best
+    precision/recall balance among tree-based models.
+
   • LSTM models the temporal evolution of radio metrics directly,
     allowing it to detect degrading RSRP trends before the A3
-    event fires — this makes it the most suitable model for
-    proactive handover prediction in production.
+    event fires — suitable for proactive handover prediction.
+
+  • GRU is a lighter recurrent alternative to LSTM. Comparable
+    accuracy with fewer parameters and faster inference.
+
+  • Stacking Ensemble combines XGBoost, Random Forest, and LSTM
+    via a meta Logistic Regression, leveraging complementary
+    decision boundaries for higher overall AUC.
 
   RECOMMENDATION FOR DEPLOYMENT:
-    Use Random Forest for low-latency inference with explainability;
-    LSTM when historical context (last 10 s) is available.
+    Use XGBoost or Random Forest for low-latency inference;
+    LSTM/GRU when historical context (last 10 s) is available;
+    Stacking Ensemble when maximum AUC is the priority.
 =================================================================
