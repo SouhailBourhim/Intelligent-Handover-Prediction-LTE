@@ -2,8 +2,11 @@
 Master pipeline runner — executes all phases in sequence.
 
 Usage:
-    python run_pipeline.py            # all phases
-    python run_pipeline.py --phase 2  # specific phase only
+    python run_pipeline.py            # all phases (2 → 3 → 4 → 5)
+    python run_pipeline.py --phase 2  # feature engineering only
+    python run_pipeline.py --phase 3  # training only
+    python run_pipeline.py --phase 4  # evaluation only
+    python run_pipeline.py --phase 5  # SHAP explanation only
 """
 
 import argparse
@@ -28,10 +31,15 @@ def phase4():
     return run_evaluation()
 
 
+def phase5():
+    from src.explain import run_explanation
+    return run_explanation()
+
+
 def main():
     parser = argparse.ArgumentParser(description="LTE Handover Prediction Pipeline")
-    parser.add_argument("--phase", type=int, choices=[2, 3, 4],
-                        help="Run a single phase (2=features, 3=train, 4=eval)")
+    parser.add_argument("--phase", type=int, choices=[2, 3, 4, 5],
+                        help="Run a single phase (2=features, 3=train, 4=eval, 5=shap)")
     args = parser.parse_args()
 
     if args.phase == 2:
@@ -40,6 +48,8 @@ def main():
         phase3()
     elif args.phase == 4:
         phase4()
+    elif args.phase == 5:
+        phase5()
     else:
         print("=" * 55)
         print("  LTE Handover Prediction — Full Pipeline")
@@ -47,6 +57,7 @@ def main():
         phase2()
         phase3()
         phase4()
+        phase5()
         print("\nAll phases complete.")
         print("Launch dashboard: streamlit run app/dashboard.py")
 

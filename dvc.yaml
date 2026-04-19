@@ -54,3 +54,15 @@ stages:
       - reports/evaluation.txt
       - reports/roc_curves.png
       - reports/confusion_matrices.png
+
+  explain:
+    cmd: python run_pipeline.py --phase 5
+    deps:
+      - src/explain.py
+      - data/processed/test.csv
+      - data/processed/meta.json
+      - models/logistic_regression.pkl
+      - models/random_forest.pkl
+      - models/xgboost.pkl
+    outs:
+      - reports/shap
