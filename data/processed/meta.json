@@ -72,6 +72,6 @@
     "test": 4050
   },
   "class_balance": {
-    "train_pos_rate": 0.0258
+    "train_pos_rate": 0.028
   }
 }

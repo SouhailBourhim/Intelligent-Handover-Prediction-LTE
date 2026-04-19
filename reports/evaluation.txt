@@ -3,59 +3,59 @@
 =================================================================
 
 ── Logistic Regression ──
-  Precision : 0.3045
-  Recall    : 0.9189
-  F1-score  : 0.4574
-  ROC-AUC   : 0.9786
+  Precision : 0.3938
+  Recall    : 0.9714
+  F1-score  : 0.5604
+  ROC-AUC   : 0.9855
 
   Classification Report:
                   precision    recall  f1-score   support
     
-               0       1.00      0.94      0.97      3939
-               1       0.30      0.92      0.46       111
+               0       1.00      0.96      0.98      3945
+               1       0.39      0.97      0.56       105
     
-        accuracy                           0.94      4050
-       macro avg       0.65      0.93      0.71      4050
-    weighted avg       0.98      0.94      0.95      4050
+        accuracy                           0.96      4050
+       macro avg       0.70      0.97      0.77      4050
+    weighted avg       0.98      0.96      0.97      4050
 
 ── Random Forest ──
-  Precision : 0.4595
-  Recall    : 0.7658
-  F1-score  : 0.5743
-  ROC-AUC   : 0.9807
+  Precision : 0.5521
+  Recall    : 0.8571
+  F1-score  : 0.6716
+  ROC-AUC   : 0.9920
 
   Classification Report:
                   precision    recall  f1-score   support
     
-               0       0.99      0.97      0.98      3939
-               1       0.46      0.77      0.57       111
+               0       1.00      0.98      0.99      3945
+               1       0.55      0.86      0.67       105
     
-        accuracy                           0.97      4050
-       macro avg       0.73      0.87      0.78      4050
-    weighted avg       0.98      0.97      0.97      4050
+        accuracy                           0.98      4050
+       macro avg       0.77      0.92      0.83      4050
+    weighted avg       0.98      0.98      0.98      4050
 
 ── LSTM ──
-  Precision : 0.4203
-  Recall    : 0.7838
-  F1-score  : 0.5472
-  ROC-AUC   : 0.9390
+  Precision : 0.4581
+  Recall    : 0.9118
+  F1-score  : 0.6098
+  ROC-AUC   : 0.9874
 
   Classification Report:
                   precision    recall  f1-score   support
     
-               0       0.99      0.97      0.98      3804
-               1       0.42      0.78      0.55       111
+               0       1.00      0.97      0.98      3813
+               1       0.46      0.91      0.61       102
     
-        accuracy                           0.96      3915
-       macro avg       0.71      0.88      0.76      3915
-    weighted avg       0.98      0.96      0.97      3915
+        accuracy                           0.97      3915
+       macro avg       0.73      0.94      0.80      3915
+    weighted avg       0.98      0.97      0.97      3915
 
 =================================================================
   COMPARISON SUMMARY
 =================================================================
 
-  Best F1      : Random Forest  (0.5743)
-  Best ROC-AUC : Random Forest  (0.9807)
+  Best F1      : Random Forest  (0.6716)
+  Best ROC-AUC : Random Forest  (0.9920)
 
   ANALYSIS:
 
