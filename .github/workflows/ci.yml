@@ -37,14 +37,8 @@ jobs:
       - name: Initialize DVC
         run: dvc init --no-scm
 
-      - name: Pull DVC-tracked data (if remote configured)
-        run: dvc pull --run-cache || true
-
-      - name: Reproduce DVC pipeline (features → train → evaluate → explain)
-        run: |
-          # Skip simulate stage to avoid re-running the heavy simulation.
-          # dataset.csv must already be tracked in DVC or committed directly.
-          dvc repro features train evaluate explain
+      - name: Reproduce DVC pipeline (simulate → features → train → evaluate → explain)
+        run: dvc repro
 
       - name: Promote best model
         run: python scripts/promote_best_model.py
