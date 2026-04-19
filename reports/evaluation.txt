@@ -1,0 +1,79 @@
+=================================================================
+  EVALUATION REPORT — Intelligent Handover Prediction (LTE)
+=================================================================
+
+── Logistic Regression ──
+  Precision : 0.3045
+  Recall    : 0.9189
+  F1-score  : 0.4574
+  ROC-AUC   : 0.9786
+
+  Classification Report:
+                  precision    recall  f1-score   support
+    
+               0       1.00      0.94      0.97      3939
+               1       0.30      0.92      0.46       111
+    
+        accuracy                           0.94      4050
+       macro avg       0.65      0.93      0.71      4050
+    weighted avg       0.98      0.94      0.95      4050
+
+── Random Forest ──
+  Precision : 0.4595
+  Recall    : 0.7658
+  F1-score  : 0.5743
+  ROC-AUC   : 0.9807
+
+  Classification Report:
+                  precision    recall  f1-score   support
+    
+               0       0.99      0.97      0.98      3939
+               1       0.46      0.77      0.57       111
+    
+        accuracy                           0.97      4050
+       macro avg       0.73      0.87      0.78      4050
+    weighted avg       0.98      0.97      0.97      4050
+
+── LSTM ──
+  Precision : 0.4203
+  Recall    : 0.7838
+  F1-score  : 0.5472
+  ROC-AUC   : 0.9390
+
+  Classification Report:
+                  precision    recall  f1-score   support
+    
+               0       0.99      0.97      0.98      3804
+               1       0.42      0.78      0.55       111
+    
+        accuracy                           0.96      3915
+       macro avg       0.71      0.88      0.76      3915
+    weighted avg       0.98      0.96      0.97      3915
+
+=================================================================
+  COMPARISON SUMMARY
+=================================================================
+
+  Best F1      : Random Forest  (0.5743)
+  Best ROC-AUC : Random Forest  (0.9807)
+
+  ANALYSIS:
+
+  • Logistic Regression is a fast linear baseline. It struggles
+    with the non-linear RSRP/SINR boundary dynamics but provides
+    a useful lower bound and interpretable coefficients.
+
+  • Random Forest captures feature interactions (RSRP gap,
+    rolling trends, delta features) that the linear model misses.
+    Ensemble bagging reduces variance on the rare positive class.
+    Feature importances expose which KPIs drive the prediction.
+
+  • LSTM models the temporal evolution of radio metrics directly,
+    allowing it to detect degrading RSRP trends before the A3
+    event fires — this makes it the most suitable model for
+    proactive handover prediction in production.
+
+  RECOMMENDATION FOR DEPLOYMENT:
+    Use Random Forest for low-latency inference with explainability;
+    LSTM when historical context (last 10 s) is available.
+=================================================================
