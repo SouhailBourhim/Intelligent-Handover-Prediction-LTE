@@ -1,7 +1,7 @@
 pandas==2.2.2
 numpy==1.26.4
 scikit-learn==1.5.0
-xgboost==2.0.3
+xgboost==2.0.3          # float32 cast in models.py/evaluate.py is forward-compatible with 3.x
 torch==2.3.0
 joblib==1.4.2
 streamlit==1.36.0
