@@ -1,0 +1,14 @@
+artifact_uri: /Users/apple/Desktop/Intelligent_Handover_Prediction_in_LTE_Networks_using_ML/mlruns/919995039798280414/ac0459e084fb40dca1da15b0db72db88/artifacts
+end_time: 1776620108761
+entry_point_name: ''
+experiment_id: '919995039798280414'
+lifecycle_stage: active
+run_id: ac0459e084fb40dca1da15b0db72db88
+run_name: xgboost
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1776617589173
+status: 3
+tags: []
+user_id: apple

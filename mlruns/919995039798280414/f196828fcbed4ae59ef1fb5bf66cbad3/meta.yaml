@@ -1,0 +1,14 @@
+artifact_uri: /Users/apple/Desktop/Intelligent_Handover_Prediction_in_LTE_Networks_using_ML/mlruns/919995039798280414/f196828fcbed4ae59ef1fb5bf66cbad3/artifacts
+end_time: 1776620831879
+entry_point_name: ''
+experiment_id: '919995039798280414'
+lifecycle_stage: active
+run_id: f196828fcbed4ae59ef1fb5bf66cbad3
+run_name: gru
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1776620826378
+status: 3
+tags: []
+user_id: apple
