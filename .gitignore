@@ -1,0 +1,50 @@
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# ── Virtual environments ───────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+
+# ── Jupyter ────────────────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# ── Data files (large) — keep directory structure via .gitkeep ────────────────
+lte_handover_prediction/data/raw/*.csv
+lte_handover_prediction/data/processed/*.csv
+# Root-level legacy CSVs
+lte_handover_dataset.csv
+
+# ── Model binaries ─────────────────────────────────────────────────────────────
+lte_handover_prediction/models/*.pkl
+lte_handover_prediction/models/*.pt
+lte_handover_prediction/models/*.joblib
+# Keep meta.json (small, important)
+!lte_handover_prediction/data/processed/meta.json
+
+# ── IDE / editor ──────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+.claude/
+
+# ── macOS ──────────────────────────────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# ── Logs / temp ────────────────────────────────────────────────────────────────
+*.log
+*.tmp
+tmp/
