@@ -34,10 +34,18 @@ jobs:
           pip install -r requirements.txt
           pip install dvc
 
-      - name: Initialize DVC
-        run: dvc init --no-scm
+      # Cache the DVC run-cache directory.
+      # Key includes hashes of all pipeline source files so the cache is
+      # invalidated (and stages re-run) only when the code actually changes.
+      - name: Cache DVC run-cache
+        uses: actions/cache@v4
+        with:
+          path: .dvc/cache
+          key: dvc-${{ runner.os }}-${{ hashFiles('dvc.yaml', 'src/**', 'simulate.py', 'requirements.txt') }}
+          restore-keys: |
+            dvc-${{ runner.os }}-
 
-      - name: Reproduce DVC pipeline (simulate → features → train → evaluate → explain)
+      - name: Reproduce DVC pipeline
         run: dvc repro
 
       - name: Promote best model
@@ -47,7 +55,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: evaluation-reports
-          path: reports/          # includes reports/shap/ SHAP plots
+          path: reports/
           retention-days: 30
 
       - name: Upload champion model metadata
