@@ -477,7 +477,7 @@ with tab_mlf:
     st.subheader("MLflow Experiment Runs")
     try:
         import mlflow
-        mlflow.set_tracking_uri(str(ROOT / "mlruns"))
+        mlflow.set_tracking_uri(f"sqlite:///{ROOT / 'mlflow.db'}")
         client = mlflow.tracking.MlflowClient()
         exp    = client.get_experiment_by_name("lte_handover_prediction")
         if exp is None:

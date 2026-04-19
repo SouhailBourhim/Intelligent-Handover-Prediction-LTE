@@ -19,10 +19,10 @@
     weighted avg       0.92      0.81      0.84      4050
 
 ── Random Forest ──
-  Precision : 0.4076
+  Precision : 0.4058
   Recall    : 0.7202
-  F1-score  : 0.5206
-  ROC-AUC   : 0.9088
+  F1-score  : 0.5191
+  ROC-AUC   : 0.9089
 
   Classification Report:
                   precision    recall  f1-score   support
@@ -35,75 +35,75 @@
     weighted avg       0.91      0.87      0.89      4050
 
 ── XGBoost ──
-  Precision : 0.4087
-  Recall    : 0.6839
-  F1-score  : 0.5116
-  ROC-AUC   : 0.9124
+  Precision : 0.4176
+  Recall    : 0.7021
+  F1-score  : 0.5237
+  ROC-AUC   : 0.9116
 
   Classification Report:
                   precision    recall  f1-score   support
     
-               0       0.96      0.90      0.93      3664
-               1       0.41      0.68      0.51       386
+               0       0.97      0.90      0.93      3664
+               1       0.42      0.70      0.52       386
     
         accuracy                           0.88      4050
-       macro avg       0.69      0.79      0.72      4050
+       macro avg       0.69      0.80      0.73      4050
     weighted avg       0.91      0.88      0.89      4050
 
 ── LSTM ──
-  Precision : 0.3188
-  Recall    : 0.8324
-  F1-score  : 0.4611
-  ROC-AUC   : 0.8874
+  Precision : 0.3171
+  Recall    : 0.8108
+  F1-score  : 0.4559
+  ROC-AUC   : 0.8806
 
   Classification Report:
                   precision    recall  f1-score   support
     
-               0       0.98      0.81      0.89      3545
-               1       0.32      0.83      0.46       370
+               0       0.98      0.82      0.89      3545
+               1       0.32      0.81      0.46       370
+    
+        accuracy                           0.82      3915
+       macro avg       0.65      0.81      0.67      3915
+    weighted avg       0.91      0.82      0.85      3915
+
+── GRU ──
+  Precision : 0.3203
+  Recall    : 0.8189
+  F1-score  : 0.4605
+  ROC-AUC   : 0.8775
+
+  Classification Report:
+                  precision    recall  f1-score   support
+    
+               0       0.98      0.82      0.89      3545
+               1       0.32      0.82      0.46       370
     
         accuracy                           0.82      3915
        macro avg       0.65      0.82      0.68      3915
     weighted avg       0.92      0.82      0.85      3915
 
-── GRU ──
-  Precision : 0.3177
-  Recall    : 0.8432
-  F1-score  : 0.4615
-  ROC-AUC   : 0.8823
-
-  Classification Report:
-                  precision    recall  f1-score   support
-    
-               0       0.98      0.81      0.89      3545
-               1       0.32      0.84      0.46       370
-    
-        accuracy                           0.81      3915
-       macro avg       0.65      0.83      0.67      3915
-    weighted avg       0.92      0.81      0.85      3915
-
 ── Stacking Ensemble ──
-  Precision : 0.5174
-  Recall    : 0.3216
-  F1-score  : 0.3967
-  ROC-AUC   : 0.9111
+  Precision : 0.5157
+  Recall    : 0.3541
+  F1-score  : 0.4199
+  ROC-AUC   : 0.9119
 
   Classification Report:
                   precision    recall  f1-score   support
     
                0       0.93      0.97      0.95      3545
-               1       0.52      0.32      0.40       370
+               1       0.52      0.35      0.42       370
     
         accuracy                           0.91      3915
-       macro avg       0.72      0.65      0.67      3915
-    weighted avg       0.89      0.91      0.90      3915
+       macro avg       0.73      0.66      0.68      3915
+    weighted avg       0.90      0.91      0.90      3915
 
 =================================================================
   COMPARISON SUMMARY
 =================================================================
 
-  Best F1      : Random Forest  (0.5206)
-  Best ROC-AUC : XGBoost  (0.9124)
+  Best F1      : XGBoost  (0.5237)
+  Best ROC-AUC : Stacking Ensemble  (0.9119)
 
   ANALYSIS:
 

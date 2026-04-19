@@ -57,7 +57,7 @@ REPORTS_DIR   = ROOT / "reports"
 LABEL         = "handover_soon"
 SEQ_LEN       = 10
 
-MLF_TRACKING  = str(ROOT / "mlruns")
+MLF_TRACKING  = f"sqlite:///{ROOT / 'mlflow.db'}"
 MLF_RUN_IDS   = MODELS_DIR / "mlflow_run_ids.json"
 
 
