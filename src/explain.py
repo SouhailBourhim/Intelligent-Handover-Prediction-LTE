@@ -55,7 +55,7 @@ try:
 except ImportError:
     MLFLOW_AVAILABLE = False
 
-MLF_TRACKING = str(ROOT / "mlruns")
+MLF_TRACKING = f"sqlite:///{ROOT / 'mlflow.db'}"
 MLF_RUN_IDS  = MODELS_DIR / "mlflow_run_ids.json"
 
 

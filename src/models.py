@@ -52,7 +52,7 @@ LABEL   = "handover_soon"
 SEQ_LEN = 10   # LSTM/GRU look-back window (steps)
 
 MLF_EXP_NAME    = "lte_handover_prediction"
-MLF_TRACKING    = str(ROOT / "mlruns")
+MLF_TRACKING    = f"sqlite:///{ROOT / 'mlflow.db'}"
 MLF_RUN_IDS     = MODELS_DIR / "mlflow_run_ids.json"
 
 

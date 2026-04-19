@@ -23,7 +23,7 @@ sys.path.insert(0, str(ROOT))
 
 CHAMPION_DIR  = ROOT / "models" / "champion"
 MODELS_DIR    = ROOT / "models"
-MLF_TRACKING  = str(ROOT / "mlruns")
+MLF_TRACKING  = f"sqlite:///{ROOT / 'mlflow.db'}"
 MLF_EXP_NAME  = "lte_handover_prediction"
 
 # Mapping from MLflow run name → saved model file(s)
@@ -53,7 +53,7 @@ def promote_via_mlflow():
 
     exp = client.get_experiment_by_name(MLF_EXP_NAME)
     if exp is None:
-        print(f"Experiment '{MLF_EXP_NAME}' not found in mlruns/.")
+        print(f"Experiment '{MLF_EXP_NAME}' not found in mlflow.db.")
         return False
 
     runs = client.search_runs(

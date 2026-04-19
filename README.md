@@ -64,7 +64,7 @@ A full machine-learning pipeline that predicts **imminent handover events** (`ha
 │       ├── xgboost.pkl               # Copy of the best-AUC model
 │       └── metadata.json             # Name, AUC, F1, promotion timestamp
 │
-├── mlruns/                           # MLflow local tracking store (auto-created)
+├── mlflow.db                         # MLflow SQLite tracking store (auto-created, gitignored)
 ├── reports/                          # evaluation.txt + roc_curves.png + confusion_matrices.png
 ├── docs/
 │   └── technical_report.md          # Full write-up
@@ -264,18 +264,13 @@ MLflow is an **optional** dependency — the pipeline runs normally without it. 
 pip install mlflow   # already in requirements.txt
 ```
 
-MLflow uses a **local file-store** by default (no server required):
+MLflow uses a **local SQLite database** by default — no server required, and all UI tabs (including the Overview tab) work correctly:
 
 ```
-mlruns/                  ← created automatically on first run
-└── lte_handover_prediction/
-    ├── <run-id-lr>/
-    ├── <run-id-rf>/
-    ├── <run-id-xgb>/
-    ├── <run-id-lstm>/
-    ├── <run-id-gru>/
-    └── <run-id-stacking>/
+mlflow.db            ← created automatically on first run (gitignored)
 ```
+
+> **Why not `mlruns/`?** MLflow's file-based backend does not support the Overview tab or several comparison features. SQLite is the recommended single-machine alternative and requires zero extra setup.
 
 ### What gets logged
 
@@ -290,7 +285,7 @@ Run IDs are saved to `models/mlflow_run_ids.json` during training so that the ev
 
 ```bash
 # From the project root — opens http://localhost:5000
-mlflow ui
+mlflow ui --backend-store-uri sqlite:///mlflow.db
 ```
 
 Then navigate to the **lte_handover_prediction** experiment to compare runs side-by-side, inspect logged parameters, and download plot artifacts.
@@ -302,7 +297,7 @@ Alternatively, view runs directly in the **Streamlit dashboard** under the 🧪 
 ```python
 import mlflow
 
-mlflow.set_tracking_uri("mlruns/")          # or absolute path
+mlflow.set_tracking_uri("sqlite:///mlflow.db")   # relative to CWD
 client = mlflow.tracking.MlflowClient()
 
 exp = client.get_experiment_by_name("lte_handover_prediction")
@@ -320,14 +315,14 @@ for r in runs:
 
 ### Switching to a database or remote tracking server
 
-The local file-store is convenient for development. For a shared team setup, change the tracking URI before running the pipeline:
+The local SQLite store is convenient for development. For a shared team setup, point to a remote tracking server instead:
 
 ```bash
-# SQLite (single-machine, no server)
-export MLFLOW_TRACKING_URI=sqlite:///mlflow.db
-
 # Remote MLflow server
 export MLFLOW_TRACKING_URI=http://your-mlflow-server:5000
+
+# PostgreSQL (production)
+export MLFLOW_TRACKING_URI=postgresql://user:pass@host/mlflow
 ```
 
 No code changes are needed — `src/models.py` and `src/evaluate.py` pick up the env variable automatically.
