@@ -1,0 +1,56 @@
+stages:
+
+  simulate:
+    cmd: python simulate.py
+    deps:
+      - simulate.py
+      - src/radio_model.py
+      - src/mobility.py
+      - src/handover_logic.py
+    outs:
+      - data/raw/dataset.csv
+
+  features:
+    cmd: python run_pipeline.py --phase 2
+    deps:
+      - src/features.py
+      - data/raw/dataset.csv
+    outs:
+      - data/processed/train.csv
+      - data/processed/val.csv
+      - data/processed/test.csv
+      - data/processed/meta.json
+      - models/scaler.pkl
+
+  train:
+    cmd: python run_pipeline.py --phase 3
+    deps:
+      - src/models.py
+      - data/processed/train.csv
+      - data/processed/val.csv
+      - data/processed/meta.json
+    outs:
+      - models/logistic_regression.pkl
+      - models/random_forest.pkl
+      - models/xgboost.pkl
+      - models/lstm.pt
+      - models/gru.pt
+      - models/stacking_ensemble.pkl
+      - models/mlflow_run_ids.json
+
+  evaluate:
+    cmd: python run_pipeline.py --phase 4
+    deps:
+      - src/evaluate.py
+      - data/processed/test.csv
+      - data/processed/meta.json
+      - models/logistic_regression.pkl
+      - models/random_forest.pkl
+      - models/xgboost.pkl
+      - models/lstm.pt
+      - models/gru.pt
+      - models/stacking_ensemble.pkl
+    outs:
+      - reports/evaluation.txt
+      - reports/roc_curves.png
+      - reports/confusion_matrices.png

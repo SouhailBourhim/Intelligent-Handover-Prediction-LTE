@@ -1,0 +1,10 @@
+{
+  "model_name": "xgboost",
+  "run_id": "ac0459e084fb40dca1da15b0db72db88",
+  "test_roc_auc": 0.9124,
+  "test_f1": 0.5116,
+  "promoted_at": "2026-04-19T16:55:19.596039+00:00",
+  "model_files": [
+    "xgboost.pkl"
+  ]
+}
