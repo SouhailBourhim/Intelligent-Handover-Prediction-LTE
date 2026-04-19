@@ -8,6 +8,7 @@ Features:
   • Real-time handover risk gauge
   • Model comparison table
   • MLflow runs table       (reads mlruns/ experiment)
+  • SHAP explanation tab    (pre-computed bar / beeswarm / waterfall plots)
   • Interactive filters: model selector, UE filter, time range, risk threshold
 """
 
@@ -194,9 +195,9 @@ st.markdown("---")
 
 # ── Tabs ───────────────────────────────────────────────────────────────────────
 
-tab_kpi, tab_ho, tab_risk, tab_cmp, tab_mlf, tab_map = st.tabs(
+tab_kpi, tab_ho, tab_risk, tab_cmp, tab_shap, tab_mlf, tab_map = st.tabs(
     ["📊 Radio KPIs", "🔁 HO Timeline", "⚠️ Risk", "📋 Model Comparison",
-     "🧪 MLflow Runs", "🗺️ Mobility Map"]
+     "🔍 SHAP Explanations", "🧪 MLflow Runs", "🗺️ Mobility Map"]
 )
 
 # ── Tab 1: KPI Charts ──────────────────────────────────────────────────────────
@@ -375,7 +376,102 @@ with tab_cmp:
     else:
         st.info("Run `python run_pipeline.py` to generate evaluation results.")
 
-# ── Tab 5: MLflow Runs ─────────────────────────────────────────────────────────
+# ── Tab 5: SHAP Explanations ───────────────────────────────────────────────────
+
+with tab_shap:
+    st.subheader("SHAP Feature Explanations")
+    st.markdown(
+        "SHAP (SHapley Additive exPlanations) shows how much each feature "
+        "contributed to a model's prediction — both globally (average over the "
+        "test set) and for individual predictions.\n\n"
+        "**Supported models:** Logistic Regression · Random Forest · XGBoost  \n"
+        "Run `python run_pipeline.py --phase 5` to regenerate plots after retraining."
+    )
+
+    SHAP_DIR = ROOT / "reports" / "shap"
+
+    _SHAP_MODELS = {
+        "Logistic Regression": "logistic_regression",
+        "Random Forest":       "random_forest",
+        "XGBoost":             "xgboost",
+    }
+
+    shap_model_sel = st.selectbox(
+        "Select model to explain",
+        options=list(_SHAP_MODELS.keys()),
+        key="shap_model_sel",
+    )
+    slug = _SHAP_MODELS[shap_model_sel]
+
+    plot_type = st.radio(
+        "Plot type",
+        options=["Feature Importance (bar)", "Beeswarm Summary", "Single Prediction (waterfall)"],
+        horizontal=True,
+        key="shap_plot_type",
+    )
+
+    plot_file_map = {
+        "Feature Importance (bar)":           SHAP_DIR / f"shap_bar_{slug}.png",
+        "Beeswarm Summary":                   SHAP_DIR / f"shap_summary_{slug}.png",
+        "Single Prediction (waterfall)":      SHAP_DIR / f"shap_waterfall_{slug}.png",
+    }
+
+    img_path = plot_file_map[plot_type]
+
+    if img_path.exists():
+        st.image(str(img_path), use_container_width=True)
+
+        with st.expander("How to read this plot"):
+            if "bar" in plot_type.lower():
+                st.markdown(
+                    "**Bar chart** — each bar is a feature's average absolute SHAP value "
+                    "across the test set.  Longer bar = larger average impact on model output.  \n"
+                    "Features at the top are the most influential globally."
+                )
+            elif "beeswarm" in plot_type.lower():
+                st.markdown(
+                    "**Beeswarm** — each dot is one test sample.  \n"
+                    "• **Horizontal position** (x-axis): SHAP value — how much this feature "
+                    "pushed the prediction towards *HO soon* (right) or away (left).  \n"
+                    "• **Colour**: feature value — red = high, blue = low.  \n"
+                    "A cluster of red dots on the right means *high feature value increases "
+                    "handover risk*."
+                )
+            else:
+                st.markdown(
+                    "**Waterfall** — explains a single positive prediction (a row where the "
+                    "model predicted *HO soon*).  \n"
+                    "• Bars to the **right** push the prediction higher (more likely HO).  \n"
+                    "• Bars to the **left** push it lower.  \n"
+                    "• The bottom of the chart shows the model's base value (average prediction "
+                    "on the training set); the top shows the final output for this sample."
+                )
+    else:
+        st.info(
+            f"SHAP plots not found for **{shap_model_sel}**.  \n"
+            "Run:  \n```bash\npython run_pipeline.py --phase 5\n```"
+        )
+
+    # ── On-demand re-explanation ───────────────────────────────────────────────
+    st.markdown("---")
+    with st.expander("⚡ Recompute SHAP explanations now (may take ~30 s)"):
+        if st.button("Run Phase 5 — SHAP Explanation", key="run_shap_btn"):
+            import subprocess, sys as _sys
+            with st.spinner("Computing SHAP values…"):
+                result = subprocess.run(
+                    [_sys.executable, str(ROOT / "run_pipeline.py"), "--phase", "5"],
+                    capture_output=True, text=True, cwd=str(ROOT),
+                )
+            if result.returncode == 0:
+                st.success("Done! Reload the page to see updated plots.")
+                st.code(result.stdout[-2000:] if len(result.stdout) > 2000
+                        else result.stdout)
+            else:
+                st.error("SHAP computation failed.")
+                st.code(result.stderr[-2000:])
+
+
+# ── Tab 6: MLflow Runs ─────────────────────────────────────────────────────────
 
 with tab_mlf:
     st.subheader("MLflow Experiment Runs")

@@ -40,11 +40,11 @@ jobs:
       - name: Pull DVC-tracked data (if remote configured)
         run: dvc pull --run-cache || true
 
-      - name: Reproduce DVC pipeline (features → train → evaluate)
+      - name: Reproduce DVC pipeline (features → train → evaluate → explain)
         run: |
           # Skip simulate stage to avoid re-running the heavy simulation.
           # dataset.csv must already be tracked in DVC or committed directly.
-          dvc repro features train evaluate
+          dvc repro features train evaluate explain
 
       - name: Promote best model
         run: python scripts/promote_best_model.py
@@ -53,7 +53,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: evaluation-reports
-          path: reports/
+          path: reports/          # includes reports/shap/ SHAP plots
           retention-days: 30
 
       - name: Upload champion model metadata

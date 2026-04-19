@@ -91,7 +91,7 @@ pip install -r requirements.txt
 # 3. Generate dataset
 python simulate.py
 
-# 4. Run full pipeline (feature engineering → training → evaluation)
+# 4. Run full pipeline (features → training → evaluation → SHAP)
 python run_pipeline.py
 
 # 5. Promote best model to champion
@@ -107,6 +107,7 @@ Run individual phases:
 python run_pipeline.py --phase 2   # feature engineering only
 python run_pipeline.py --phase 3   # training only (all 6 models)
 python run_pipeline.py --phase 4   # evaluation only
+python run_pipeline.py --phase 5   # SHAP explanations only
 ```
 
 ---
@@ -213,9 +214,31 @@ Six models are trained in sequence. Each run is logged to MLflow automatically (
 
 **Random Forest** maximises F1. **XGBoost** wins on ROC-AUC and is promoted as the champion model. **Stacking Ensemble** achieves the highest precision of all six, trading recall for fewer false alarms. **LSTM/GRU** capture raw temporal RSRP trajectories without manual feature engineering.
 
-### Phase 5 — Dashboard (`app/dashboard.py`)
+### Phase 5 — SHAP Explanation (`src/explain.py`)
 
-Interactive Streamlit app with six tabs:
+Computes SHAP values for the three fastest-to-explain models and saves nine plots to `reports/shap/`:
+
+| Model | Explainer | Why this one |
+|-------|-----------|--------------|
+| Logistic Regression | `LinearExplainer` | Exact, analytical — instant |
+| Random Forest | `TreeExplainer` | Exact tree-path SHAP — fast |
+| XGBoost | `TreeExplainer` | Exact tree-path SHAP — fast |
+
+Three plot types per model:
+
+| Plot | File | What it shows |
+|------|------|---------------|
+| Bar chart | `shap_bar_<model>.png` | Top-20 features ranked by mean \|SHAP\| |
+| Beeswarm | `shap_summary_<model>.png` | Per-sample SHAP distribution, coloured by feature value |
+| Waterfall | `shap_waterfall_<model>.png` | Single positive prediction decomposed feature-by-feature |
+
+LSTM, GRU, and Stacking are excluded (DeepExplainer/KernelExplainer would take minutes and produce noisier values).
+
+SHAP plots are also logged as artifacts into each model's MLflow run under the `shap/` sub-directory.
+
+### Phase 6 — Dashboard (`app/dashboard.py`)
+
+Interactive Streamlit app with seven tabs:
 
 | Tab | Content |
 |-----|---------|
@@ -223,10 +246,11 @@ Interactive Streamlit app with six tabs:
 | 🔁 HO Timeline | Scatter of handover events by UE and target cell |
 | ⚠️ Risk | Per-UE risk heatmap + gauge for the selected model |
 | 📋 Model Comparison | Metrics table parsed from `reports/evaluation.txt` |
+| 🔍 SHAP Explanations | Bar / beeswarm / waterfall plots; on-demand recompute button |
 | 🧪 MLflow Runs | Live query of `mlruns/` experiment — val F1, test AUC, status |
 | 🗺️ Mobility Map | UE position tracks + base station markers |
 
-A **champion model banner** at the top of the dashboard reads `models/champion/metadata.json` and displays the promoted model name, AUC, and promotion timestamp.
+A **champion model banner** at the top reads `models/champion/metadata.json` and displays the promoted model name, AUC, and promotion timestamp.
 
 ---
 
@@ -350,6 +374,68 @@ DVC detects which stages are stale (inputs changed) and only re-runs those. Run 
 
 ---
 
+## SHAP Explanation
+
+[SHAP](https://shap.readthedocs.io) (SHapley Additive exPlanations) assigns each feature a contribution score for every prediction, grounded in cooperative game theory.  Three explainer types are used depending on the model:
+
+| Explainer | Models | Speed |
+|-----------|--------|-------|
+| `TreeExplainer` | XGBoost, Random Forest | Fast — exact tree-path computation |
+| `LinearExplainer` | Logistic Regression | Instant — analytical solution |
+
+### Running SHAP
+
+```bash
+python run_pipeline.py --phase 5
+```
+
+Plots are saved to `reports/shap/` — nine files total (three per model):
+
+```
+reports/shap/
+├── shap_bar_logistic_regression.png
+├── shap_bar_random_forest.png
+├── shap_bar_xgboost.png
+├── shap_summary_logistic_regression.png
+├── shap_summary_random_forest.png
+├── shap_summary_xgboost.png
+├── shap_waterfall_logistic_regression.png
+├── shap_waterfall_random_forest.png
+└── shap_waterfall_xgboost.png
+```
+
+### Reading the plots
+
+**Bar chart** (`shap_bar_*.png`) — global importance ranked by mean |SHAP|.
+The top features across all three models are `rsrp_diff`-related deltas and rolling
+statistics, confirming that the rate of change in the serving/neighbour RSRP gap
+is the strongest predictor of an imminent handover.
+
+**Beeswarm** (`shap_summary_*.png`) — one dot per test sample, coloured by
+feature value (red = high, blue = low).  A cluster of red dots on the right
+means *high feature value increases handover risk*.  For example, a high
+`rsrp_neighbor_roll5_mean` (strong neighbour over the last 5 s) strongly
+pushes predictions toward `handover_soon = 1`.
+
+**Waterfall** (`shap_waterfall_*.png`) — single positive-class prediction
+decomposed feature-by-feature, starting from the model base value and ending
+at the final output.  Useful for explaining *why* a specific UE was flagged.
+
+### SHAP in the dashboard
+
+The 🔍 SHAP Explanations tab in the Streamlit dashboard displays all nine
+pre-computed plots with an interactive model / plot-type selector and
+tooltips explaining how to read each chart.  An **on-demand recompute**
+button re-runs phase 5 in a subprocess if the plots are stale after retraining.
+
+### SHAP and MLflow
+
+Each set of three plots is logged as artifacts into the corresponding
+MLflow training run under the `shap/` sub-directory, so they are
+accessible through `mlflow ui` alongside the model metrics.
+
+---
+
 ## CI/CD — GitHub Actions
 
 `.github/workflows/ci.yml` runs on every push and pull request to `main`:
@@ -373,7 +459,7 @@ DVC detects which stages are stale (inputs changed) and only re-runs those. Run 
 ## Requirements
 
 - Python 3.10+
-- pandas · numpy · scikit-learn · xgboost · torch · streamlit · plotly · seaborn · joblib · statsmodels · mlflow · dvc
+- pandas · numpy · scikit-learn · xgboost · torch · streamlit · plotly · seaborn · joblib · statsmodels · mlflow · dvc · shap
 
 See [`requirements.txt`](requirements.txt) for pinned versions.
 
