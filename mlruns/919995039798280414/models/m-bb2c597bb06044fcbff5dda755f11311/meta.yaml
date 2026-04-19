@@ -1,0 +1,10 @@
+artifact_location: /Users/apple/Desktop/Intelligent_Handover_Prediction_in_LTE_Networks_using_ML/mlruns/919995039798280414/models/m-bb2c597bb06044fcbff5dda755f11311/artifacts
+creation_timestamp: 1776617331969
+experiment_id: '919995039798280414'
+last_updated_timestamp: 1776617335602
+model_id: m-bb2c597bb06044fcbff5dda755f11311
+model_type: null
+name: model
+source_run_id: 47f30fe2fa044b488cfb46295a392061
+status: 2
+status_message: null

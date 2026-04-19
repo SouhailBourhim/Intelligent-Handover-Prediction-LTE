@@ -1,0 +1,23 @@
+artifact_path: /Users/apple/Desktop/Intelligent_Handover_Prediction_in_LTE_Networks_using_ML/mlruns/919995039798280414/models/m-e0c92bb3ca2d49749e5c16206e8411fb/artifacts
+flavors:
+  python_function:
+    env:
+      conda: conda.yaml
+      virtualenv: python_env.yaml
+    loader_module: mlflow.sklearn
+    model_path: model.pkl
+    predict_fn: predict
+    python_version: 3.14.3
+  sklearn:
+    code: null
+    pickled_model: model.pkl
+    serialization_format: cloudpickle
+    sklearn_version: 1.8.0
+    skops_trusted_types: null
+mlflow_version: 3.11.1
+model_id: m-e0c92bb3ca2d49749e5c16206e8411fb
+model_size_bytes: 18031985
+model_uuid: m-e0c92bb3ca2d49749e5c16206e8411fb
+prompts: null
+run_id: b20f1f5ef568476da48de06f486cb15c
+utc_time_created: '2026-04-19 17:45:37.299347'

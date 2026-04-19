@@ -1,0 +1,14 @@
+artifact_uri: /Users/apple/Desktop/Intelligent_Handover_Prediction_in_LTE_Networks_using_ML/mlruns/919995039798280414/69dabd8e64ce4dcd8548abf03f843da1/artifacts
+end_time: 1776621309801
+entry_point_name: ''
+experiment_id: '919995039798280414'
+lifecycle_stage: active
+run_id: 69dabd8e64ce4dcd8548abf03f843da1
+run_name: stacking_ensemble
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1776621304661
+status: 3
+tags: []
+user_id: apple
