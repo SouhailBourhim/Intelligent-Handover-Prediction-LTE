@@ -34,6 +34,9 @@ jobs:
           pip install -r requirements.txt
           pip install dvc
 
+      - name: Initialize DVC
+        run: dvc init --no-scm
+
       - name: Pull DVC-tracked data (if remote configured)
         run: dvc pull --run-cache || true
 
