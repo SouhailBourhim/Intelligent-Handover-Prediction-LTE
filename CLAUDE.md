@@ -24,7 +24,11 @@ python scripts/promote_best_model.py
 streamlit run app/dashboard.py
 
 # DVC pipeline (CI-safe — skips the heavy simulate step)
-dvc repro features train evaluate explain
+# Reproduce only stale stages (checks .dvc/cache first)
+dvc repro
+
+# Check which stages are stale without running anything
+dvc status
 
 # Execute a notebook with the project kernel (required — default kernel lacks seaborn/torch)
 jupyter nbconvert --to notebook --execute --inplace \

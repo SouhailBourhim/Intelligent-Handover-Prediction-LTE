@@ -1,0 +1,191 @@
+schema: '2.0'
+stages:
+  simulate:
+    cmd: python simulate.py
+    deps:
+    - path: simulate.py
+      hash: md5
+      md5: cf6e7a7340181512bd89edbe83172797
+      size: 15570
+    - path: src/handover_logic.py
+      hash: md5
+      md5: 8140cd4ad9bb2ce28355e63696b4d0e9
+      size: 11642
+    - path: src/mobility.py
+      hash: md5
+      md5: 411e963b6e6a796ae45f26c50b0444f3
+      size: 8027
+    - path: src/radio_model.py
+      hash: md5
+      md5: e703ed660f8588868bc144457acd7018
+      size: 10256
+    outs:
+    - path: data/raw/dataset.csv
+      hash: md5
+      md5: d6b27ec1e3e5a1f75d7078890e489dae
+      size: 2952331
+  features:
+    cmd: python run_pipeline.py --phase 2
+    deps:
+    - path: data/raw/dataset.csv
+      hash: md5
+      md5: d6b27ec1e3e5a1f75d7078890e489dae
+      size: 2952331
+    - path: src/features.py
+      hash: md5
+      md5: 2a600ffa567391ba07a31e2116002967
+      size: 9553
+    outs:
+    - path: data/processed/meta.json
+      hash: md5
+      md5: 394f927706df9ceb79a6e2fd83896ca0
+      size: 2365
+    - path: data/processed/test.csv
+      hash: md5
+      md5: 0330e70ad359beaf2ca169850e92f632
+      size: 7014176
+    - path: data/processed/train.csv
+      hash: md5
+      md5: ac3c6bbde711b95d2c4022f3b15a48f0
+      size: 32644036
+    - path: data/processed/val.csv
+      hash: md5
+      md5: 9c20a8d8017c2f711bd1b049944960ac
+      size: 7018105
+    - path: models/scaler.pkl
+      hash: md5
+      md5: 2b37a6493cccdf5cf42c45f7c1d06adf
+      size: 4647
+  train:
+    cmd: python run_pipeline.py --phase 3
+    deps:
+    - path: data/processed/meta.json
+      hash: md5
+      md5: 394f927706df9ceb79a6e2fd83896ca0
+      size: 2365
+    - path: data/processed/train.csv
+      hash: md5
+      md5: ac3c6bbde711b95d2c4022f3b15a48f0
+      size: 32644036
+    - path: data/processed/val.csv
+      hash: md5
+      md5: 9c20a8d8017c2f711bd1b049944960ac
+      size: 7018105
+    - path: src/models.py
+      hash: md5
+      md5: 27a59c401d025243f197d43cf1335bf6
+      size: 23105
+    outs:
+    - path: models/gru.pt
+      hash: md5
+      md5: 11002d62412dfac855a0dafcec511c45
+      size: 228919
+    - path: models/logistic_regression.pkl
+      hash: md5
+      md5: 33ccf84cd7ec03aed37bd6471dddc6d1
+      size: 1615
+    - path: models/lstm.pt
+      hash: md5
+      md5: b449ad2725b36e582d9b850b831f8e3f
+      size: 301193
+    - path: models/mlflow_run_ids.json
+      hash: md5
+      md5: 8531bede348a702c82bedf734a6aacd1
+      size: 334
+    - path: models/random_forest.pkl
+      hash: md5
+      md5: e7397ee55703962f9ec3a56d2d19b04b
+      size: 18065641
+    - path: models/stacking_ensemble.pkl
+      hash: md5
+      md5: 09e6648b999a4a5f9ea92ba3bf1a6e71
+      size: 895
+    - path: models/xgboost.pkl
+      hash: md5
+      md5: b6b7f7f5202315da6e950ef166255287
+      size: 1494764
+  evaluate:
+    cmd: python run_pipeline.py --phase 4
+    deps:
+    - path: data/processed/meta.json
+      hash: md5
+      md5: 394f927706df9ceb79a6e2fd83896ca0
+      size: 2365
+    - path: data/processed/test.csv
+      hash: md5
+      md5: 0330e70ad359beaf2ca169850e92f632
+      size: 7014176
+    - path: models/gru.pt
+      hash: md5
+      md5: 11002d62412dfac855a0dafcec511c45
+      size: 228919
+    - path: models/logistic_regression.pkl
+      hash: md5
+      md5: 33ccf84cd7ec03aed37bd6471dddc6d1
+      size: 1615
+    - path: models/lstm.pt
+      hash: md5
+      md5: b449ad2725b36e582d9b850b831f8e3f
+      size: 301193
+    - path: models/random_forest.pkl
+      hash: md5
+      md5: e7397ee55703962f9ec3a56d2d19b04b
+      size: 18065641
+    - path: models/stacking_ensemble.pkl
+      hash: md5
+      md5: 09e6648b999a4a5f9ea92ba3bf1a6e71
+      size: 895
+    - path: models/xgboost.pkl
+      hash: md5
+      md5: b6b7f7f5202315da6e950ef166255287
+      size: 1494764
+    - path: src/evaluate.py
+      hash: md5
+      md5: 9838fb71a4ac04175c8e0f65999666fe
+      size: 16774
+    outs:
+    - path: reports/confusion_matrices.png
+      hash: md5
+      md5: e83ca563ae25cb5ee914d2c6add5b63e
+      size: 102247
+    - path: reports/evaluation.txt
+      hash: md5
+      md5: bfd1e035ca93f3ab8263a4a59411b0a1
+      size: 4807
+    - path: reports/roc_curves.png
+      hash: md5
+      md5: 85b97c7a1866ea4907d52daf16d146e9
+      size: 103275
+  explain:
+    cmd: python run_pipeline.py --phase 5
+    deps:
+    - path: data/processed/meta.json
+      hash: md5
+      md5: 394f927706df9ceb79a6e2fd83896ca0
+      size: 2365
+    - path: data/processed/test.csv
+      hash: md5
+      md5: 0330e70ad359beaf2ca169850e92f632
+      size: 7014176
+    - path: models/logistic_regression.pkl
+      hash: md5
+      md5: 33ccf84cd7ec03aed37bd6471dddc6d1
+      size: 1615
+    - path: models/random_forest.pkl
+      hash: md5
+      md5: e7397ee55703962f9ec3a56d2d19b04b
+      size: 18065641
+    - path: models/xgboost.pkl
+      hash: md5
+      md5: b6b7f7f5202315da6e950ef166255287
+      size: 1494764
+    - path: src/explain.py
+      hash: md5
+      md5: 7ab73f44012ed67ccc27e0accef73938
+      size: 12182
+    outs:
+    - path: reports/shap
+      hash: md5
+      md5: 023dcdfadbbc09592a076c19356a2e21.dir
+      size: 1487578
+      nfiles: 9
