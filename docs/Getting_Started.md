@@ -1,73 +1,87 @@
 # Getting Started
 
-## Installation Steps
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/SouhailBourhim/Intelligent-Handover-Prediction-LTE.git
-   cd Intelligent-Handover-Prediction-LTE
-   ```
-2. Install the required packages:
-   ```bash
-   pip install -r requirements.txt
-   ```
+## Requirements
 
-## Python Environment Setup
-- It's recommended to use a virtual environment for Python.
-- Set up a virtual environment:
-  ```bash
-  python -m venv venv
-  source venv/bin/activate  # On Windows use `venv\Scripts\activate`
-  ```
+- Python 3.11 (`.python-version` file included)
+- ~2 GB disk space (models + MLflow artifacts)
+- No GPU required — LSTM/GRU train on CPU in under 5 minutes
 
-## Quickstart Guide
+## Installation
 
-### Phase 1: Data Ingestion
-Run the following command to ingest data:
 ```bash
-python data_ingestion.py
+git clone https://github.com/SouhailBourhim/Intelligent-Handover-Prediction-LTE.git
+cd Intelligent-Handover-Prediction-LTE
+
+python3.11 -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
 ```
 
-### Phase 2: Data Preprocessing
-Run the following command to preprocess the data:
+## Run the full pipeline
+
 ```bash
-python data_preprocessing.py
+# Generate the 27k-row LTE dataset (takes ~30 s)
+python simulate.py
+
+# Feature engineering → train all 6 models → evaluate → SHAP explanations
+python run_pipeline.py
+
+# Promote the best model to models/champion/
+python scripts/promote_best_model.py
 ```
 
-### Phase 3: Feature Engineering
-To engineer features, execute:
+Run a single phase without re-running the others:
+
 ```bash
-python feature_engineering.py
+python run_pipeline.py --phase 2   # features
+python run_pipeline.py --phase 3   # training
+python run_pipeline.py --phase 4   # evaluation
+python run_pipeline.py --phase 5   # SHAP
 ```
 
-### Phase 4: Model Training
-Train the model using:
+## Launch the dashboard
+
 ```bash
-python model_training.py
+streamlit run app/dashboard.py
+# Opens http://localhost:8501
 ```
 
-### Phase 5: Model Evaluation
-Evaluate the model with:
+## Score new measurements
+
 ```bash
-python model_evaluation.py
+# Show current champion
+python predict.py --info
+
+# Score a CSV file
+python predict.py --csv path/to/measurements.csv
+
+# Score a single row as JSON (only raw signal columns needed)
+python predict.py --json '{"rsrp_serving": -92, "sinr": 6.5, "ue_speed": 14}'
 ```
 
-### Phase 6: Model Deployment
-Deploy the model by running:
+## View MLflow experiment
+
 ```bash
-python model_deployment.py
+mlflow ui --backend-store-uri sqlite:///mlflow.db
+# Opens http://localhost:5000  →  navigate to "lte_handover_prediction"
 ```
 
-## MLflow Setup
-1. Install MLflow:
-   ```bash
-   pip install mlflow
-   ```
-2. Start the MLflow server:
-   ```bash
-   mlflow ui
-   ```
-3. Navigate to `http://127.0.0.1:5000` to view the dashboard.
+## DVC pipeline
+
+If you have DVC installed, the pipeline is fully reproducible:
+
+```bash
+pip install dvc
+dvc repro          # runs only stale stages
+dvc dag            # visualise the dependency graph
+```
 
 ## Troubleshooting
-- If you encounter issues, ensure all dependencies are correctly installed and compatible with your Python version.
-- For common errors, refer to the [FAQs](https://github.com/SouhailBourhim/Intelligent-Handover-Prediction-LTE/wiki/FAQs) section.
+
+| Symptom | Fix |
+|---------|-----|
+| `ModuleNotFoundError: seaborn` when running notebooks | Use the project kernel: `--ExecutePreprocessor.kernel_name=lte_venv` |
+| Segfault on macOS when XGBoost and PyTorch are both imported | Already handled — `OMP_NUM_THREADS=1` is set in `src/models.py` before torch import |
+| `Experiment not found` in notebook 08 | Run `python run_pipeline.py` phases 3 + 4 at least once to populate `mlflow.db` |
+| `models/champion/metadata.json not found` in `predict.py` | Run `python scripts/promote_best_model.py` after the pipeline |
+| DVC `features` stage fails with missing dataset | Run `python simulate.py` first, or run `dvc repro` which includes the `simulate` stage |
