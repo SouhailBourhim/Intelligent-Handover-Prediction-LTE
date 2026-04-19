@@ -38,12 +38,13 @@ This is a **binary time-series classification** problem on a heavily imbalanced 
 ## 2. Project Architecture
 
 ```
-lte_handover_prediction/
-│
-├── simulate.py              # Phase 1 — synthetic LTE dataset generation
+├── simulate.py              # Phase 1 — synthetic LTE dataset generation (v3)
 ├── run_pipeline.py          # orchestrates phases 2–4
 │
 ├── src/
+│   ├── radio_model.py       # 3GPP UMa path loss, shadow/fast fading, SINR, CQI
+│   ├── mobility.py          # Random Waypoint UE mobility (pedestrian + vehicle)
+│   ├── handover_logic.py    # A3/A4/A5 events, L3 filter, TTT, HO failure, ping-pong
 │   ├── features.py          # Phase 2 — cleaning + feature engineering
 │   ├── models.py            # Phase 3 — LR, Random Forest, LSTM
 │   └── evaluate.py          # Phase 4 — metrics, plots, report
@@ -57,8 +58,8 @@ lte_handover_prediction/
 │   ├── 03_modeling.ipynb
 │   ├── 04_evaluation.ipynb
 │   ├── 05_dashboard_preview.ipynb
-│   ├── 06_simulation_realism.ipynb   ← v2 improvements analysis
-│   └── 07_model_impact.ipynb         ← v1 vs v2 model comparison
+│   ├── 06_simulation_realism.ipynb   ← v3 radio model analysis
+│   └── 07_model_impact.ipynb         ← v2 vs v3 model comparison
 │
 ├── data/
 │   ├── raw/dataset.csv      # 27,000-row simulated dataset
@@ -103,61 +104,95 @@ simulate.py ──► data/raw/dataset.csv
 | Frequency | 2 GHz (LTE Band 1) |
 | Bandwidth | 10 MHz (noise floor −107 dBm) |
 
-### 3.2 UE Mobility
+### 3.2 UE Mobility (`src/mobility.py`)
 
-| Type | Count | Speed | Heading dynamics |
-|------|-------|-------|-----------------|
-| Pedestrian | 8 | 1–2 m/s | High random-walk variance (σ=0.4 rad) |
-| Vehicle | 7 | 10–20 m/s | Low random-walk variance (σ=0.15 rad) |
+Random Waypoint model with direction persistence:
 
-Boundary reflection: heading mirrors off grid edges.
+| Type | Count | Speed | Heading blend | Pause |
+|------|-------|-------|---------------|-------|
+| Pedestrian | 8 | 0.5–2 m/s | 50% toward waypoint, σ=0.30 rad | 0–10 s on arrival |
+| Vehicle | 7 | 8–20 m/s | 80% toward waypoint, σ=0.06 rad | None |
 
-### 3.3 Radio Model
+Each step the heading blends toward the current waypoint target then adds small Gaussian noise, producing realistic curvilinear trajectories. On arrival at a waypoint a new one is sampled (pedestrians within 200 m radius, vehicles anywhere on the grid). Boundary: elastic reflection off grid edges.
 
-**Path loss** (3GPP TR 25.814 Urban Macro):
+### 3.3 Radio Model (`src/radio_model.py`)
 
+**LOS/NLOS state** (3GPP TR 36.873 UMa outdoor):
 ```
-PL(d) = 128.1 + 37.6 · log₁₀(d_km)   [dB]
+P(LOS | d) = min(18/d, 1) · (1 − exp(−d/63)) + exp(−d/63)
+  d=100 m → P(LOS) ≈ 0.35,   d=400 m → P(LOS) ≈ 0.05
+```
+State is re-sampled every 5 steps; separate σ values are used for LOS vs NLOS shadow fading.
+
+**Path loss** (3GPP TR 36.873 UMa):
+```
+LOS:  PL = 22·log₁₀(d) + 28 + 20·log₁₀(fc_GHz)
+NLOS: PL = max(PL_LOS, 19.55 + 39.09·log₁₀(d))
 ```
 
-At reference distances: d=100m → −44 dBm · d=500m → −71 dBm · d=1000m → −82 dBm
+**Shadow fading** — Gudmundson AR(1), decorrelation distance 100 m:
+```
+ρ = exp(−Δd / 100),   σ_LOS = 4 dB,   σ_NLOS = 6 dB
+σ_new = ρ · σ_old + √(1−ρ²) · N(0, σ²)
+```
+
+**Fast fading** — AR(1) complex Gaussian, decorrelation distance 3 m:
+- NLOS: Rayleigh amplitude, clipped to [−8, +3] dB (represents 1 s measurement average)
+- LOS: Rician K=5 dB adds a deterministic in-phase component
 
 **RSRP:**
 ```
-RSRP = P_tx − PL(d) + σ_shadow   [dBm]
-Clipped to [−140, −30] dBm
+RSRP = P_tx − PL(d, LOS/NLOS) + shadow + fast_fade   [dBm]
+Clipped to [−140, −25] dBm
 ```
 
-**SINR** (inter-cell + load-based intra-cell):
+**L3 measurement filter** — 3GPP TS 36.331 EMA applied to raw RSRP before HO logic:
 ```
-SINR = 10·log₁₀( S / (Σ I_inter + I_load + N) )
-I_load = 1.5 dB · (n_co_UE − 1)
-```
-
-**RSRQ** (3GPP approximation):
-```
-RSRQ = RSRP_serving − 10·log₁₀(Σ RSRP_all_mW)
-Clipped to [−20, −3] dB
+L3_RSRP_new = α · RSRP_raw + (1−α) · L3_RSRP_old     (α = 0.5)
 ```
 
-**CQI** mapped from SINR using 3GPP TS 36.213 lookup table (values 1–15).
-
-### 3.4 Handover Logic (A3 Event + TTT)
-
-The A3 Time-To-Trigger state machine:
-
+**SINR** — computed from L3-filtered RSRP, load-weighted interference:
 ```
-condition: RSRP_neighbor > RSRP_serving + 3 dB
-
-if condition met AND same candidate for TTT=3 consecutive steps:
-    → trigger handover attempt
-    → classify event type (A3/A4/A5)
-    → apply failure probability
-    → check ping-pong
-
-if condition breaks before TTT expires:
-    → reset counter
+SINR = 10·log₁₀( S_L3 / (Σ P_nb_L3 · (0.10 + 0.90·load_nb) + N) )
+Clipped to [−20, +30] dB
 ```
+Idle cells still contribute 10% of their reference-signal power as an interference floor.
+
+**RSRQ** (3GPP TS 36.214):
+```
+RSRQ = RSRP_serving − 10·log₁₀(Σ RSRP_all_mW),   clipped to [−20, −3] dB
+```
+
+**CQI** mapped from SINR via 3GPP TS 36.213 15-level lookup table.
+
+### 3.4 Handover Logic (`src/handover_logic.py`)
+
+**A3/A4/A5 event classification** (on L3-filtered RSRP):
+
+| Event | Condition | Network meaning |
+|-------|-----------|-----------------|
+| **A5** | `L3_srv < −68 dBm` AND `L3_nb > −60 dBm` | Coverage emergency — leave immediately |
+| **A4** | `L3_nb > −55 dBm` | Strong target available |
+| **A3** | `L3_nb > L3_srv + margin` | Standard best-server reselection |
+
+Classification priority: A5 > A4 > A3.
+
+**Velocity-aware TTT:**
+```
+TTT = max(1, 3 − floor(speed / 7))   [steps]
+```
+Vehicles at 14 m/s get TTT=1 (react quickly); pedestrians keep TTT=3.
+
+**Multi-factor HO failure probability:**
+```
+P(fail) = 0.50·p_SINR + 0.15·p_speed + 0.15·p_target + 0.20·p_sustained
+```
+- `p_SINR`: sigmoid centred at −12 dB (low SINR → hard to execute HO)
+- `p_speed`: sigmoid centred at 28 m/s (very fast UE may outrun procedure)
+- `p_target`: linear ramp from 0 at −70 dBm to 1 at −105 dBm
+- `p_sustained`: fraction of `low_rsrp_decay=25` steps already at cell edge
+
+**Ping-pong hysteresis:** after a ping-pong the reverse cell pair receives +3 dB extra HO margin for 20 steps, suppressing immediate bouncebacks.
 
 ### 3.5 Dataset Schema
 
@@ -166,16 +201,21 @@ if condition breaks before TTT expires:
 | `timestamp` | int | Simulation step (seconds) |
 | `ue_id` | int | UE identifier (0–14) |
 | `serving_cell_id` | int | Current serving BS (0–3) |
-| `rsrp_serving` | float | RSRP from serving BS (dBm) |
+| `rsrp_serving` | float | Instantaneous RSRP from serving BS (dBm) |
 | `rsrq_serving` | float | RSRQ from serving BS (dB) |
-| `sinr` | float | Signal-to-Interference+Noise Ratio (dB) |
+| `sinr` | float | SINR computed from L3-filtered RSRP (dB) |
 | `cqi` | int | Channel Quality Indicator (1–15) |
 | `best_neighbor_cell_id` | int | ID of strongest neighbour BS |
-| `rsrp_neighbor` | float | RSRP from best neighbour (dBm) |
+| `rsrp_neighbor` | float | Instantaneous RSRP from best neighbour (dBm) |
 | `rsrq_neighbor` | float | RSRQ from best neighbour (dB) |
+| `rsrp_diff` | float | `rsrp_serving − rsrp_neighbor` (dB) |
+| `l3_rsrp_serving` | float | L3-filtered serving RSRP — what HO logic sees (dBm) |
+| `l3_rsrp_neighbor` | float | L3-filtered neighbour RSRP (dBm) |
 | `ue_speed` | float | UE speed (m/s) |
 | `pos_x`, `pos_y` | float | UE position (metres) |
+| `los_flag` | 0/1 | 1 if serving link is currently LOS |
 | `serving_cell_load` | int | UEs currently on serving cell |
+| `cell_load_pct` | float | Serving cell load as percentage (0–100) |
 | `handover_event` | 0/1 | HO attempt made at this step |
 | `target_cell_id` | int | Target BS (−1 if no HO) |
 | `event_type` | str | A3 / A4 / A5 / none |
@@ -186,79 +226,74 @@ if condition breaks before TTT expires:
 
 ---
 
-## 4. Simulation Realism Improvements (v2)
+## 4. Simulator Architecture (v3)
 
-### 4.1 Correlated Shadow Fading
+The v3 simulator is split into three modules under `src/` that are orchestrated by `simulate.py`. The key design goal was to make every modelling choice traceable to a specific 3GPP specification or published measurement study.
 
-**Motivation:** in v1, each step added independent Gaussian noise. In reality, shadow fading varies smoothly as a UE moves through the environment — nearby positions are correlated.
+### 4.1 Why L3 Filtering Changes Everything
 
-**Implementation:** Gudmundson AR(1) model with decorrelation distance d_corr = 100 m:
+**Problem:** earlier versions computed SINR from instantaneous fast-faded RSRP. A deep instantaneous fade (−15 dB below mean) gave SINR ≈ −20 dB, making the HO failure model think every handover was happening in a near-outage. This drove the failure rate to 30–40%, far above the 15–25% seen in real networks.
+
+**Solution:** 3GPP TS 36.331 mandates that UEs apply a Layer-3 measurement filter (exponential moving average, α=0.5) to raw RSRP before reporting. The HO trigger and failure model both operate on the L3-filtered value, which averages out fast-fading dips. SINR is also computed from L3-filtered RSRP, representing a 1-second measurement-averaged channel quality.
+
+**Effect:** A3 HO triggers now occur at median SINR ≈ −4.5 dB (cell-edge but not outage); A5 triggers at ≈ −16 dB (genuine coverage holes). Overall failure rate: ~20%.
+
+### 4.2 Path Loss Model Upgrade
+
+**v1/v2:** 3GPP TR 25.814 single slope (`128.1 + 37.6·log₁₀(d_km)`) — no LOS/NLOS distinction.
+
+**v3:** 3GPP TR 36.873 UMa with separate LOS and NLOS formulas:
+```
+LOS:  PL = 22·log₁₀(d) + 28 + 20·log₁₀(fc)   [dB at 2 GHz]
+NLOS: PL = max(PL_LOS, 19.55 + 39.09·log₁₀(d))
+```
+NLOS has a steeper distance exponent (39 vs 22), which produces realistic deep coverage holes at cell edges — A5 events increase from ~6% to ~22% of HO triggers, matching field observations.
+
+LOS probability is distance-dependent (Sec 3.3), re-sampled every 5 steps to model slow environment changes.
+
+### 4.3 Fast Fading as Averaged Measurement
+
+**v1/v2:** no explicit fast fading.
+
+**v3:** AR(1) complex Gaussian state machine (`ff_i`, `ff_q`) evolving with spatial decorrelation ~3 m (a few wavelengths at 2 GHz). The clipping range is [−8, +3] dB, representing a 1-second time-averaged contribution — not the ±20 dB of instantaneous fast fading.
+
+For LOS links a Rician K=5 dB component is added to the in-phase channel, raising the mean RSRP by ~1.5 dB relative to NLOS Rayleigh.
+
+### 4.4 Load-Weighted SINR Interference Model
+
+**v2:** `SINR_eff = SINR_baseline − 1.5·(n_UE − 1)` — a simple additive penalty.
+
+**v3:** proper power-domain model:
+```
+I_k = P_k_mW × (0.10 + 0.90 × load_k)
+SINR = S / (Σ I_k + N)
+```
+Each neighbour cell contributes interference proportional to its fractional load. The 10% floor models always-on reference signals. This means:
+- A fully loaded cell (10 UEs) contributes 100% of its received power as interference
+- An empty cell still contributes 10% (reference signals cannot be turned off in LTE)
+
+### 4.5 Handover Events in v3
+
+| Metric | v2 | v3 |
+|--------|----|----|
+| HO failure rate | 3.7% | ~20% |
+| A3 share | 79% | ~68% |
+| A4 share | 15% | ~10% |
+| A5 share | 6% | ~22% |
+| Ping-pong share | 0.7% | ~2% |
+
+The higher A5 share and failure rate in v3 are physically correct: steeper NLOS path loss means more UEs reach the A5 coverage-emergency threshold, and the multi-factor failure model (SINR + speed + target RSRP + sustained low RSRP) captures more failure modes than the single-variable sigmoid in v2.
+
+### 4.6 Ping-Pong Hysteresis
+
+After a ping-pong is detected, the reverse cell pair (target → serving) receives an extra 3 dB HO margin for 20 steps. This prevents the UE from immediately bouncing back — a standard SON (Self-Optimising Networks) technique in 3GPP TS 36.902.
 
 ```python
-rho = exp(−step_dist / d_corr)
-σ_new = rho · σ_old + sqrt(1 − rho²) · N(0, σ²)
+if ping_pong and not ho_failed:
+    rev_key = (best_nb_id, ue.serving_cell)
+    ue.pp_extra_margin[rev_key]     = 3.0    # dB
+    ue.pp_margin_remaining[rev_key] = 20     # steps
 ```
-
-**Effect:** pedestrian at 1 m/s has ρ ≈ 0.990 (barely changes per step); vehicle at 15 m/s has ρ ≈ 0.861 (faster decorrelation). RSRP traces are now spatially smooth.
-
-### 4.2 A3 / A4 / A5 Event Classification
-
-Three 3GPP measurement event types are now distinguished at each handover trigger:
-
-| Event | Condition | Share in data | Network meaning |
-|-------|-----------|---------------|-----------------|
-| **A3** | `RSRP_nb > RSRP_srv + 3 dB` | 79% | Standard best-server reselection |
-| **A4** | `RSRP_nb > −55 dBm` | 15% | UE moving close to a new BS |
-| **A5** | `RSRP_srv < −68` AND `RSRP_nb > −60` | 6% | Coverage emergency |
-
-Classification priority: A5 > A4 > A3 (most critical condition wins).
-
-### 4.3 Cell Load & SINR Degradation
-
-**Motivation:** cells with more UEs experience intra-cell interference.
-
-**Model:** each additional UE on the serving cell adds 1.5 dB SINR penalty.
-
-```
-SINR_effective = SINR_baseline − 1.5 × (n_co_UE − 1)
-```
-
-This creates realistic SINR variance correlated with time-varying cell occupancy (1–9 UEs observed per cell).
-
-### 4.4 Handover Failure & RLF
-
-**Motivation:** when the serving RSRP is already weak, the UE may lose radio contact during the HO execution window.
-
-**Model:** sigmoid failure probability centred at −80 dBm:
-
-```
-P(fail) = σ(−(RSRP_srv − (−80)) / 5)
-```
-
-| RSRP | P(fail) |
-|------|---------|
-| −60 dBm | 1.8% |
-| −70 dBm | 12% |
-| −80 dBm | 50% |
-| −90 dBm | 88% |
-
-On failure: UE enters **RLF recovery** for 3 steps with SINR = −15 dB.
-
-**Data impact:** 3.7% failure rate observed (10/268 attempts). `handover_soon` label is defined on *successful* HOs only — failed HO attempts are not labelled positive.
-
-### 4.5 Ping-Pong Detection
-
-**Definition:** a handover (A→B) is a ping-pong if the UE had previously handed over from B→A within the last 10 steps.
-
-**Detection:**
-
-```python
-for (h_from, h_to, h_t) in reversed(ho_history):
-    if current_t − h_t > PING_PONG_WINDOW: break
-    if h_from == to_cell and h_to == from_cell: return True
-```
-
-0.7% of HO attempts were ping-pongs (2/268). This is a real LTE KPI — operators track it to detect over-tight handover margins.
 
 ---
 
@@ -409,15 +444,16 @@ Close to Random Forest (F1 = 0.610). Its advantage is learning the temporal *tra
 | Metric | Value |
 |--------|-------|
 | Dataset size | 27,000 rows (15 UEs × 1,800 s) |
-| Positive label rate | 2.9% |
-| Handover attempts | 268 |
-| HO failure rate | 3.7% |
-| Ping-pong rate | 0.7% of HO attempts |
-| Event split | A3: 79% · A4: 15% · A5: 6% |
+| Raw columns | 26 (incl. `l3_rsrp_serving`, `l3_rsrp_neighbor`, `los_flag`, `cell_load_pct`, `rsrp_diff`) |
+| Positive label rate | ~3% |
+| HO failure rate | ~20% |
+| Ping-pong rate | ~2% of HO attempts |
+| Event split | A3: ~68% · A4: ~10% · A5: ~22% |
+| LOS fraction | ~30% of timesteps |
 | Best model | Random Forest |
 | Best F1 | **0.672** |
 | Best ROC-AUC | **0.992** |
-| Engineered features | 71 (from 16 raw) |
+| Engineered features | 71 (from 26 raw) |
 
 ---
 
@@ -450,7 +486,7 @@ The current LSTM already matches the RF without feature engineering — further 
 ```bash
 # 1. Clone repository
 git clone https://github.com/SouhailBourhim/Intelligent-Handover-Prediction-LTE.git
-cd Intelligent-Handover-Prediction-LTE/lte_handover_prediction
+cd Intelligent-Handover-Prediction-LTE
 
 # 2. Create virtual environment
 python3 -m venv .venv
