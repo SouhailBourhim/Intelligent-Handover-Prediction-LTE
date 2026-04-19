@@ -14,7 +14,8 @@ A full machine-learning pipeline that predicts **imminent handover events** (`ha
 | Simulator | v3 — 3GPP UMa LOS/NLOS, Random Waypoint mobility, A3/A4/A5 events |
 | Models | LR · RF · XGBoost · LSTM · GRU · Stacking Ensemble |
 | Best F1 | Random Forest (F1 = 0.521) |
-| Best AUC | XGBoost (ROC-AUC = 0.912) — promoted as **champion** |
+| Best AUC | XGBoost (ROC-AUC = 0.912) |
+| Champion | Stacking Ensemble (AUC = 0.9119) — highest combined precision + AUC |
 | MLOps | MLflow experiment tracking · DVC pipeline · GitHub Actions CI |
 
 ---
@@ -23,9 +24,11 @@ A full machine-learning pipeline that predicts **imminent handover events** (`ha
 
 ```
 ├── simulate.py                   # Phase 1 — LTE network simulation (v3)
-├── run_pipeline.py               # Master runner (phases 2–4)
+├── run_pipeline.py               # Master runner (phases 2–5)
+├── predict.py                    # Inference script — score new measurements
 ├── requirements.txt
-├── dvc.yaml                      # DVC pipeline definition
+├── dvc.yaml                      # DVC pipeline definition (5 stages)
+├── .python-version               # Pins Python 3.11
 │
 ├── src/
 │   ├── radio_model.py            # 3GPP UMa path loss, shadow/fast fading, SINR, CQI
@@ -33,7 +36,8 @@ A full machine-learning pipeline that predicts **imminent handover events** (`ha
 │   ├── handover_logic.py         # A3/A4/A5 events, L3 filter, TTT, HO failure, ping-pong
 │   ├── features.py               # Phase 2 — feature engineering + train/val/test split
 │   ├── models.py                 # Phase 3 — all 6 models + MLflow logging
-│   └── evaluate.py               # Phase 4 — metrics, ROC curves, confusion matrices
+│   ├── evaluate.py               # Phase 4 — metrics, ROC curves, confusion matrices
+│   └── explain.py                # Phase 5 — SHAP explanations (LR, RF, XGBoost)
 │
 ├── scripts/
 │   └── promote_best_model.py     # Queries MLflow, copies best model to models/champion/
@@ -48,8 +52,11 @@ A full machine-learning pipeline that predicts **imminent handover events** (`ha
 │   ├── 03_modeling.ipynb
 │   ├── 04_evaluation.ipynb
 │   ├── 05_dashboard_preview.ipynb
-│   ├── 06_simulation_realism.ipynb   ← v3 radio model analysis
-│   └── 07_model_impact.ipynb         ← model comparison
+│   ├── 06_simulation_realism.ipynb    # v3 radio model analysis
+│   ├── 07_model_impact.ipynb          # model comparison
+│   ├── 08_mlflow_experiment_tracking.ipynb  # MLflow run visualisation
+│   ├── 09_shap_explanations.ipynb           # deep-dive SHAP analysis
+│   └── 10_model_comparison.ipynb            # PR curves, calibration, speed benchmark
 │
 ├── models/
 │   ├── logistic_regression.pkl
@@ -61,18 +68,22 @@ A full machine-learning pipeline that predicts **imminent handover events** (`ha
 │   ├── scaler.pkl
 │   ├── mlflow_run_ids.json           # Maps model name → MLflow run ID
 │   └── champion/
-│       ├── xgboost.pkl               # Copy of the best-AUC model
-│       └── metadata.json             # Name, AUC, F1, promotion timestamp
+│       ├── stacking_ensemble.pkl     # Copy of the promoted champion
+│       └── metadata.json            # Name, AUC, F1, promotion timestamp
 │
-├── mlflow.db                         # MLflow SQLite tracking store (auto-created, gitignored)
-├── reports/                          # evaluation.txt + roc_curves.png + confusion_matrices.png
-├── docs/
-│   └── technical_report.md          # Full write-up
-├── .github/
-│   └── workflows/
-│       └── ci.yml                    # GitHub Actions CI
-└── app/
-    └── dashboard.py                  # Phase 5 — Streamlit dashboard
+├── reports/
+│   ├── evaluation.txt
+│   ├── roc_curves.png
+│   ├── confusion_matrices.png
+│   └── shap/                        # 9 SHAP plots (bar + beeswarm + waterfall × 3 models)
+│
+├── docs/                            # Architecture and setup reference
+├── app/
+│   └── dashboard.py                 # Streamlit dashboard (7 tabs)
+├── mlflow.db                        # MLflow SQLite store (auto-created, gitignored)
+└── .github/
+    └── workflows/
+        └── ci.yml                   # GitHub Actions CI
 ```
 
 ---
@@ -84,7 +95,7 @@ A full machine-learning pipeline that predicts **imminent handover events** (`ha
 git clone https://github.com/SouhailBourhim/Intelligent-Handover-Prediction-LTE.git
 cd Intelligent-Handover-Prediction-LTE
 
-# 2. Create environment
+# 2. Create environment  (Python 3.11 recommended)
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
@@ -207,12 +218,14 @@ Six models are trained in sequence. Each run is logged to MLflow automatically (
 |-------|-----------|--------|----|---------|
 | Logistic Regression | 0.315 | 0.852 | 0.460 | 0.894 |
 | **Random Forest** | 0.408 | 0.720 | **0.521** | 0.909 |
-| XGBoost | 0.409 | 0.684 | 0.512 | **0.912** ← champion |
+| XGBoost | 0.409 | 0.684 | 0.512 | **0.912** |
 | LSTM | 0.319 | 0.832 | 0.461 | 0.887 |
 | GRU | 0.318 | 0.843 | 0.462 | 0.882 |
-| Stacking Ensemble | 0.517 | 0.322 | 0.397 | 0.911 |
+| Stacking Ensemble ★ | **0.517** | 0.322 | 0.397 | 0.912 |
 
-**Random Forest** maximises F1. **XGBoost** wins on ROC-AUC and is promoted as the champion model. **Stacking Ensemble** achieves the highest precision of all six, trading recall for fewer false alarms. **LSTM/GRU** capture raw temporal RSRP trajectories without manual feature engineering.
+★ **Stacking Ensemble** is the current **champion** — it achieves the highest precision of all six models (fewer false alarms) and matches XGBoost on AUC, making it the most suitable model for deployment.
+
+**Random Forest** maximises F1. **XGBoost** and **Stacking** are effectively tied on AUC. **LSTM/GRU** capture raw temporal RSRP trajectories without manual feature engineering.
 
 ### Phase 5 — SHAP Explanation (`src/explain.py`)
 
@@ -247,22 +260,83 @@ Interactive Streamlit app with seven tabs:
 | ⚠️ Risk | Per-UE risk heatmap + gauge for the selected model |
 | 📋 Model Comparison | Metrics table parsed from `reports/evaluation.txt` |
 | 🔍 SHAP Explanations | Bar / beeswarm / waterfall plots; on-demand recompute button |
-| 🧪 MLflow Runs | Live query of `mlruns/` experiment — val F1, test AUC, status |
+| 🧪 MLflow Runs | Live query of `mlflow.db` — val F1, test AUC, status |
 | 🗺️ Mobility Map | UE position tracks + base station markers |
 
 A **champion model banner** at the top reads `models/champion/metadata.json` and displays the promoted model name, AUC, and promotion timestamp.
 
 ---
 
+## Inference — `predict.py`
+
+Score new UE measurements against the champion model without running the full pipeline:
+
+```bash
+# Show current champion info
+python predict.py --info
+
+# Score a CSV file (one row per timestep)
+python predict.py --csv path/to/measurements.csv
+
+# Score a single row as JSON
+python predict.py --json '{"rsrp_serving": -85, "sinr": 12, ...}'
+
+# Custom decision threshold
+python predict.py --csv measurements.csv --threshold 0.35
+```
+
+**Example output:**
+
+```
+Model: stacking_ensemble  |  AUC=0.9119
+
+    UE     Prob    Decision  (threshold=0.50)
+───────────────────────────────────────────
+     3   0.7821  ⚠  HANDOVER
+     3   0.0431  ✓  ok
+     7   0.1204  ✓  ok
+```
+
+The script handles all model types automatically:
+- **sklearn models** (LR, RF, XGBoost) — direct `predict_proba`
+- **PyTorch models** (LSTM, GRU) — sliding window sequences with padding
+- **Stacking Ensemble** — transparently loads base models and composes meta-features
+
+Input CSVs only need the raw signal columns; any missing engineered features (lags, rolling stats, deltas) are filled with zero so the script works with minimal inputs.
+
+---
+
+## Notebooks
+
+All 10 notebooks have pre-computed outputs and require the `lte_venv` (or project `.venv`) kernel to re-execute.
+
+| Notebook | Content |
+|----------|---------|
+| 01 | Data generation walkthrough |
+| 02 | Feature engineering deep-dive |
+| 03 | Model training step-by-step |
+| 04 | Evaluation + ROC/confusion visualisation |
+| 05 | Dashboard preview |
+| 06 | Simulation realism analysis (v3 radio model) |
+| 07 | Side-by-side model impact comparison |
+| **08** | **MLflow experiment tracking** — run comparison, radar chart, champion spotlight |
+| **09** | **SHAP explanations** — beeswarm, dependency plots, waterfall, temporal SHAP per UE |
+| **10** | **Model comparison deep-dive** — PR curves, calibration, threshold sweep, speed benchmark, error analysis |
+
+To re-execute any notebook:
+
+```bash
+jupyter nbconvert --to notebook --execute --inplace \
+  --ExecutePreprocessor.timeout=300 \
+  --ExecutePreprocessor.kernel_name=lte_venv \
+  notebooks/<notebook>.ipynb
+```
+
+---
+
 ## MLflow Experiment Tracking
 
 MLflow is an **optional** dependency — the pipeline runs normally without it. When installed, every training run is automatically logged.
-
-### Setup
-
-```bash
-pip install mlflow   # already in requirements.txt
-```
 
 MLflow uses a **local SQLite database** by default — no server required, and all UI tabs (including the Overview tab) work correctly:
 
@@ -297,7 +371,7 @@ Alternatively, view runs directly in the **Streamlit dashboard** under the 🧪 
 ```python
 import mlflow
 
-mlflow.set_tracking_uri("sqlite:///mlflow.db")   # relative to CWD
+mlflow.set_tracking_uri("sqlite:///mlflow.db")
 client = mlflow.tracking.MlflowClient()
 
 exp = client.get_experiment_by_name("lte_handover_prediction")
@@ -313,20 +387,6 @@ for r in runs:
     print(f"{name:<25} AUC={auc:.4f}  F1={f1:.4f}")
 ```
 
-### Switching to a database or remote tracking server
-
-The local SQLite store is convenient for development. For a shared team setup, point to a remote tracking server instead:
-
-```bash
-# Remote MLflow server
-export MLFLOW_TRACKING_URI=http://your-mlflow-server:5000
-
-# PostgreSQL (production)
-export MLFLOW_TRACKING_URI=postgresql://user:pass@host/mlflow
-```
-
-No code changes are needed — `src/models.py` and `src/evaluate.py` pick up the env variable automatically.
-
 ---
 
 ## Champion Model & Model Promotion
@@ -339,8 +399,8 @@ python scripts/promote_best_model.py
 
 ```
 models/champion/
-├── xgboost.pkl          # copy of the winning model
-└── metadata.json        # { model_name, run_id, test_roc_auc, test_f1, promoted_at }
+├── stacking_ensemble.pkl   # copy of the winning model
+└── metadata.json           # { model_name, run_id, test_roc_auc, test_f1, promoted_at }
 ```
 
 The dashboard reads `metadata.json` on startup and displays the champion banner. If MLflow is not available, the script falls back to parsing `reports/evaluation.txt`.
@@ -349,20 +409,21 @@ The dashboard reads `metadata.json` on startup and displays the champion banner.
 
 ## DVC Pipeline
 
-[DVC](https://dvc.org) tracks data and model artifacts and defines the four pipeline stages in `dvc.yaml`:
+[DVC](https://dvc.org) tracks data and model artifacts and defines five pipeline stages in `dvc.yaml`:
 
 | Stage | Command | Inputs | Outputs |
 |-------|---------|--------|---------|
 | `simulate` | `python simulate.py` | `src/radio_model.py`, `src/mobility.py`, `src/handover_logic.py` | `data/raw/dataset.csv` |
 | `features` | `python run_pipeline.py --phase 2` | `src/features.py`, `data/raw/dataset.csv` | `data/processed/`, `models/scaler.pkl` |
 | `train` | `python run_pipeline.py --phase 3` | `src/models.py`, `data/processed/` | `models/*.pkl`, `models/*.pt` |
-| `evaluate` | `python run_pipeline.py --phase 4` | `src/evaluate.py`, `data/processed/test.csv`, `models/` | `reports/` |
+| `evaluate` | `python run_pipeline.py --phase 4` | `src/evaluate.py`, `data/processed/test.csv`, `models/` | `reports/evaluation.txt`, `reports/*.png` |
+| `explain` | `python run_pipeline.py --phase 5` | `src/explain.py`, `data/processed/test.csv`, `models/` | `reports/shap/` |
 
-Run the full pipeline (skipping simulate if data already exists):
+Reproduce the full pipeline:
 
 ```bash
 pip install dvc
-dvc repro features train evaluate
+dvc repro
 ```
 
 DVC detects which stages are stale (inputs changed) and only re-runs those. Run `dvc dag` to visualise the dependency graph.
@@ -371,18 +432,12 @@ DVC detects which stages are stale (inputs changed) and only re-runs those. Run 
 
 ## SHAP Explanation
 
-[SHAP](https://shap.readthedocs.io) (SHapley Additive exPlanations) assigns each feature a contribution score for every prediction, grounded in cooperative game theory.  Three explainer types are used depending on the model:
+[SHAP](https://shap.readthedocs.io) assigns each feature a contribution score for every prediction, grounded in cooperative game theory. Three explainer types are used depending on the model:
 
 | Explainer | Models | Speed |
 |-----------|--------|-------|
 | `TreeExplainer` | XGBoost, Random Forest | Fast — exact tree-path computation |
 | `LinearExplainer` | Logistic Regression | Instant — analytical solution |
-
-### Running SHAP
-
-```bash
-python run_pipeline.py --phase 5
-```
 
 Plots are saved to `reports/shap/` — nine files total (three per model):
 
@@ -399,35 +454,11 @@ reports/shap/
 └── shap_waterfall_xgboost.png
 ```
 
-### Reading the plots
+**Bar chart** — global importance ranked by mean |SHAP|. The top features across all three models are `rsrp_diff`-related deltas and rolling statistics, confirming that the rate of change in the serving/neighbour RSRP gap is the strongest predictor of an imminent handover.
 
-**Bar chart** (`shap_bar_*.png`) — global importance ranked by mean |SHAP|.
-The top features across all three models are `rsrp_diff`-related deltas and rolling
-statistics, confirming that the rate of change in the serving/neighbour RSRP gap
-is the strongest predictor of an imminent handover.
+**Beeswarm** — one dot per test sample, coloured by feature value (red = high, blue = low). A cluster of red dots on the right means *high feature value increases handover risk*.
 
-**Beeswarm** (`shap_summary_*.png`) — one dot per test sample, coloured by
-feature value (red = high, blue = low).  A cluster of red dots on the right
-means *high feature value increases handover risk*.  For example, a high
-`rsrp_neighbor_roll5_mean` (strong neighbour over the last 5 s) strongly
-pushes predictions toward `handover_soon = 1`.
-
-**Waterfall** (`shap_waterfall_*.png`) — single positive-class prediction
-decomposed feature-by-feature, starting from the model base value and ending
-at the final output.  Useful for explaining *why* a specific UE was flagged.
-
-### SHAP in the dashboard
-
-The 🔍 SHAP Explanations tab in the Streamlit dashboard displays all nine
-pre-computed plots with an interactive model / plot-type selector and
-tooltips explaining how to read each chart.  An **on-demand recompute**
-button re-runs phase 5 in a subprocess if the plots are stale after retraining.
-
-### SHAP and MLflow
-
-Each set of three plots is logged as artifacts into the corresponding
-MLflow training run under the `shap/` sub-directory, so they are
-accessible through `mlflow ui` alongside the model metrics.
+**Waterfall** — single positive-class prediction decomposed feature-by-feature, starting from the model base value and ending at the final output. Useful for explaining *why* a specific UE was flagged.
 
 ---
 
@@ -436,11 +467,10 @@ accessible through `mlflow ui` alongside the model metrics.
 `.github/workflows/ci.yml` runs on every push and pull request to `main`:
 
 1. **Install dependencies** — `pip install -r requirements.txt && pip install dvc`
-2. **Init DVC** — `dvc init --no-scm` (required on a clean runner; `--no-scm` skips Git hook setup)
-3. **Pull cached data** — `dvc pull --run-cache || true` (no-op if no remote is configured)
-4. **Reproduce pipeline** — `dvc repro features train evaluate`
-5. **Promote champion** — `python scripts/promote_best_model.py`
-6. **Upload artifacts** — `reports/` and `models/champion/metadata.json` as GitHub Actions artifacts (retained 30 days)
+2. **Init DVC** — `dvc init --no-scm`
+3. **Reproduce pipeline** — `dvc repro` (all five stages: simulate → features → train → evaluate → explain)
+4. **Promote champion** — `python scripts/promote_best_model.py`
+5. **Upload artifacts** — `reports/` and `models/champion/metadata.json` retained for 30 days
 
 ---
 
@@ -453,12 +483,12 @@ accessible through `mlflow ui` alongside the model metrics.
 
 ## Requirements
 
-- Python 3.10+
+- Python 3.11 (`.python-version` file included)
 - pandas · numpy · scikit-learn · xgboost · torch · streamlit · plotly · seaborn · joblib · statsmodels · mlflow · dvc · shap
 
 See [`requirements.txt`](requirements.txt) for pinned versions.
 
-> **macOS note:** PyTorch and XGBoost both initialise OpenMP threads. On macOS with Python 3.12+ this can cause a segfault when both are loaded in the same process. The pipeline sets `OMP_NUM_THREADS=1` before importing torch to prevent this — no action needed from the user.
+> **macOS note:** PyTorch and XGBoost both initialise OpenMP threads. On macOS this can cause a segfault when both are loaded in the same process. The pipeline sets `OMP_NUM_THREADS=1` before importing torch to prevent this — no action needed from the user.
 
 ---
 
