@@ -32,9 +32,6 @@ models/*.joblib
 models/mlflow_run_ids.json
 models/champion/*.pkl
 models/champion/*.pt
-reports/evaluation.txt
-reports/roc_curves.png
-reports/confusion_matrices.png
 reports/shap/
 
 # ── MLflow ─────────────────────────────────────────────────────────────────────
