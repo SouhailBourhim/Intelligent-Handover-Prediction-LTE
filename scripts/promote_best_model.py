@@ -2,8 +2,15 @@
 promote_best_model.py
 
 Queries the MLflow experiment 'lte_handover_prediction', finds the run with
-the highest test_roc_auc, and copies its model artifact to models/champion/.
-A metadata.json summary is written alongside.
+the highest weighted score (0.6 × F1 + 0.4 × AUC), and copies its model
+artifact to models/champion/. A metadata.json summary is written alongside.
+
+Promotion criterion — why F1 is weighted higher than AUC:
+  In LTE handover prediction a missed handover (false negative) causes an
+  immediate connectivity drop and potential RLF, while a false alarm merely
+  triggers an unnecessary preparation phase that is quickly aborted.
+  F1 penalises false negatives more directly than AUC, so we weight it 60 %
+  vs 40 % for AUC, which captures the overall discriminative ability.
 
 Usage:
     python scripts/promote_best_model.py
@@ -25,6 +32,14 @@ CHAMPION_DIR  = ROOT / "models" / "champion"
 MODELS_DIR    = ROOT / "models"
 MLF_TRACKING  = f"sqlite:///{ROOT / 'mlflow.db'}"
 MLF_EXP_NAME  = "lte_handover_prediction"
+
+# Promotion criterion weights
+W_F1  = 0.6
+W_AUC = 0.4
+
+
+def _weighted_score(f1: float, auc: float) -> float:
+    return W_F1 * f1 + W_AUC * auc
 
 # Mapping from MLflow run name → saved model file(s)
 _MODEL_FILES = {
@@ -56,22 +71,35 @@ def promote_via_mlflow():
         print(f"Experiment '{MLF_EXP_NAME}' not found in mlflow.db.")
         return False
 
+    # Fetch all runs that have both test metrics so we can compute the
+    # weighted score for each rather than relying on a single metric sort.
     runs = client.search_runs(
         experiment_ids=[exp.experiment_id],
         filter_string="metrics.test_roc_auc > 0",
-        order_by=["metrics.test_roc_auc DESC"],
-        max_results=1,
     )
     if not runs:
         print("No runs with test_roc_auc found.")
         return False
 
-    best = runs[0]
+    def _score(run):
+        f1  = run.data.metrics.get("test_f1",      0.0)
+        auc = run.data.metrics.get("test_roc_auc",  0.0)
+        return _weighted_score(f1, auc)
+
+    best  = max(runs, key=_score)
     rname = _run_name(best)
     auc   = best.data.metrics.get("test_roc_auc", 0.0)
     f1    = best.data.metrics.get("test_f1", 0.0)
+    score = _weighted_score(f1, auc)
 
-    print(f"Best run: '{rname}'  (AUC={auc:.4f}, F1={f1:.4f})")
+    print(f"Criterion: {W_F1}×F1 + {W_AUC}×AUC")
+    for r in sorted(runs, key=_score, reverse=True):
+        rn = _run_name(r)
+        _f1  = r.data.metrics.get("test_f1",      0.0)
+        _auc = r.data.metrics.get("test_roc_auc",  0.0)
+        marker = " ← champion" if r.info.run_id == best.info.run_id else ""
+        print(f"  {rn:<25} F1={_f1:.4f}  AUC={_auc:.4f}  score={_weighted_score(_f1,_auc):.4f}{marker}")
+    print(f"\nBest run: '{rname}'  (score={score:.4f}, AUC={auc:.4f}, F1={f1:.4f})")
 
     CHAMPION_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -90,12 +118,14 @@ def promote_via_mlflow():
 
     # Write metadata
     meta = {
-        "model_name":   rname,
-        "run_id":       best.info.run_id,
-        "test_roc_auc": round(auc, 4),
-        "test_f1":      round(f1, 4),
-        "promoted_at":  datetime.now(timezone.utc).isoformat(),
-        "model_files":  copied,
+        "model_name":         rname,
+        "run_id":             best.info.run_id,
+        "test_roc_auc":       round(auc, 4),
+        "test_f1":            round(f1, 4),
+        "champion_score":     round(score, 4),
+        "promotion_criterion": f"{W_F1}*F1 + {W_AUC}*AUC",
+        "promoted_at":        datetime.now(timezone.utc).isoformat(),
+        "model_files":        copied,
     }
     meta_path = CHAMPION_DIR / "metadata.json"
     with open(meta_path, "w") as f:
@@ -106,7 +136,7 @@ def promote_via_mlflow():
 
 def promote_via_evaluation_txt():
     """
-    Fallback: parse reports/evaluation.txt to find best ROC-AUC model.
+    Fallback: parse reports/evaluation.txt to find best weighted-score model.
     Copies the corresponding pkl/pt to models/champion/.
     """
     report_path = ROOT / "reports" / "evaluation.txt"
@@ -116,8 +146,9 @@ def promote_via_evaluation_txt():
 
     lines = report_path.read_text().splitlines()
 
-    # Collect {name: roc_auc}
-    scores: dict[str, float] = {}
+    # Collect {name: {roc_auc, f1}} from each model section
+    auc_scores: dict[str, float] = {}
+    f1_scores:  dict[str, float] = {}
     current = None
     for ln in lines:
         ln = ln.strip()
@@ -125,17 +156,34 @@ def promote_via_evaluation_txt():
             current = ln[3:-3].strip()
         elif current and ln.startswith("ROC-AUC"):
             try:
-                scores[current] = float(ln.split(":")[-1].strip())
+                auc_scores[current] = float(ln.split(":")[-1].strip())
+            except ValueError:
+                pass
+        elif current and ln.startswith("F1-score"):
+            try:
+                f1_scores[current] = float(ln.split(":")[-1].strip())
             except ValueError:
                 pass
 
-    if not scores:
+    if not auc_scores:
         print("Could not parse ROC-AUC scores from evaluation.txt.")
         sys.exit(1)
 
-    best_name = max(scores, key=scores.__getitem__)
-    best_auc  = scores[best_name]
-    print(f"Best model (from evaluation.txt): '{best_name}'  (AUC={best_auc:.4f})")
+    # Compute weighted score for each model; models missing F1 get 0
+    weighted: dict[str, float] = {
+        name: _weighted_score(f1_scores.get(name, 0.0), auc)
+        for name, auc in auc_scores.items()
+    }
+
+    print(f"Criterion: {W_F1}×F1 + {W_AUC}×AUC")
+    for name, ws in sorted(weighted.items(), key=lambda x: x[1], reverse=True):
+        print(f"  {name:<25} F1={f1_scores.get(name,0):.4f}  AUC={auc_scores.get(name,0):.4f}  score={ws:.4f}")
+
+    best_name  = max(weighted, key=weighted.__getitem__)
+    best_score = weighted[best_name]
+    best_auc   = auc_scores.get(best_name, 0.0)
+    best_f1    = f1_scores.get(best_name, 0.0)
+    print(f"\nBest model (from evaluation.txt): '{best_name}'  (score={best_score:.4f})")
 
     rkey  = best_name.lower().replace(" ", "_")
     files = _MODEL_FILES.get(rkey, [])
@@ -150,12 +198,14 @@ def promote_via_evaluation_txt():
             print(f"  Copied {fname} → {dst}")
 
     meta = {
-        "model_name":   best_name,
-        "run_id":       None,
-        "test_roc_auc": round(best_auc, 4),
-        "test_f1":      None,
-        "promoted_at":  datetime.now(timezone.utc).isoformat(),
-        "model_files":  copied,
+        "model_name":          best_name,
+        "run_id":              None,
+        "test_roc_auc":        round(best_auc, 4),
+        "test_f1":             round(best_f1, 4),
+        "champion_score":      round(best_score, 4),
+        "promotion_criterion": f"{W_F1}*F1 + {W_AUC}*AUC",
+        "promoted_at":         datetime.now(timezone.utc).isoformat(),
+        "model_files":         copied,
     }
     meta_path = CHAMPION_DIR / "metadata.json"
     with open(meta_path, "w") as f:

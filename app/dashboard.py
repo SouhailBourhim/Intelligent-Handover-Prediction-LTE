@@ -141,10 +141,15 @@ champion  = load_champion_meta()
 # ── Champion banner ────────────────────────────────────────────────────────────
 
 if champion:
+    _f1    = champion.get("test_f1",      0) or 0
+    _auc   = champion.get("test_roc_auc", 0) or 0
+    _score = champion.get("champion_score") or round(0.6 * _f1 + 0.4 * _auc, 4)
+    _crit  = champion.get("promotion_criterion", "0.6*F1 + 0.4*AUC")
     st.success(
         f"🏆 **Champion model:** {champion.get('model_name', '?')}  |  "
-        f"ROC-AUC: {champion.get('roc_auc', '?')}  |  "
-        f"Promoted: {champion.get('promoted_at', '?')}"
+        f"Score ({_crit}): {_score:.4f}  |  "
+        f"F1: {_f1:.4f}  |  AUC: {_auc:.4f}  |  "
+        f"Promoted: {str(champion.get('promoted_at',''))[:19].replace('T',' ')} UTC"
     )
 
 # ── Sidebar ────────────────────────────────────────────────────────────────────
@@ -384,7 +389,8 @@ with tab_shap:
         "SHAP (SHapley Additive exPlanations) shows how much each feature "
         "contributed to a model's prediction — both globally (average over the "
         "test set) and for individual predictions.\n\n"
-        "**Supported models:** Logistic Regression · Random Forest · XGBoost  \n"
+        "**Supported models:** Logistic Regression · Random Forest · XGBoost · Stacking Ensemble  \n"
+        "*(Stacking Ensemble SHAP uses KernelExplainer over the 3 meta-features: XGB prob, RF prob, LSTM prob)*  \n"
         "Run `python run_pipeline.py --phase 5` to regenerate plots after retraining."
     )
 
@@ -394,6 +400,7 @@ with tab_shap:
         "Logistic Regression": "logistic_regression",
         "Random Forest":       "random_forest",
         "XGBoost":             "xgboost",
+        "Stacking Ensemble":   "stacking_ensemble",
     }
 
     shap_model_sel = st.selectbox(

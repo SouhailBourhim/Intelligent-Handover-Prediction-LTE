@@ -132,6 +132,9 @@ def _build_seq_row_indices(df: pd.DataFrame, seq_len: int = SEQ_LEN) -> list[int
 
 def train_logistic(X_train, y_train):
     w = pos_weight(y_train)
+    # class_weight rescales the per-sample loss: minority class (handover)
+    # gets w× more weight so the linear boundary isn't pushed to always
+    # predict the majority (no-handover) class.
     model = LogisticRegression(
         max_iter=2000,
         C=0.5,
@@ -147,6 +150,9 @@ def train_logistic(X_train, y_train):
 
 def train_random_forest(X_train, y_train):
     w = pos_weight(y_train)
+    # class_weight propagates into the impurity calculation for each split,
+    # giving positive (handover) samples more influence on tree structure
+    # without oversampling them in memory.
     model = RandomForestClassifier(
         n_estimators=300,
         max_depth=12,
@@ -164,7 +170,7 @@ def train_random_forest(X_train, y_train):
 def train_xgboost(X_train, y_train, X_val, y_val):
     """
     Gradient boosted trees with:
-      • scale_pos_weight  — handles class imbalance
+      • scale_pos_weight  — handles class imbalance (neg/pos ratio)
       • early_stopping    — stops after 20 rounds without val improvement
     XGBoost 3.x prefers float32 input; cast explicitly to avoid segfaults.
     """
@@ -174,6 +180,9 @@ def train_xgboost(X_train, y_train, X_val, y_val):
     y_tr = np.asarray(y_train, dtype=np.int32)
     y_vl = np.asarray(y_val,   dtype=np.int32)
 
+    # scale_pos_weight is XGBoost's equivalent of class_weight: it multiplies
+    # the gradient of positive samples by neg/pos, steering the boosting
+    # toward fewer missed handovers rather than overall accuracy.
     spw = pos_weight(y_tr)
     model = XGBClassifier(
         n_estimators=400,
@@ -296,6 +305,11 @@ def _train_sequence_model(
     n_pos = labels_arr.sum()
     n_neg = len(labels_arr) - n_pos
     weights = np.where(labels_arr == 1, n_neg / max(n_pos, 1), 1.0)
+    # WeightedRandomSampler + pos_weight in BCEWithLogitsLoss are the PyTorch
+    # equivalents of class_weight / scale_pos_weight. The sampler balances
+    # mini-batch class ratios; pos_weight rescales the binary cross-entropy
+    # loss for the minority class.  Using both avoids the model collapsing
+    # to always predicting no-handover.
     sampler = torch.utils.data.WeightedRandomSampler(
         weights=torch.tensor(weights, dtype=torch.float32),
         num_samples=len(train_ds),

@@ -9,13 +9,13 @@ A full machine-learning pipeline that predicts **imminent handover events** (`ha
 | Item | Detail |
 |------|--------|
 | Task | Binary time-series classification |
-| Label | `handover_soon = 1` if a successful HO occurs within the next 3 steps |
+| Label | `handover_soon = 1` if a successful HO occurs within the next 3 steps — see [label note](#label-lookahead-note) |
 | Dataset | 27,000 rows · 15 UEs · 1,800 s simulation |
 | Simulator | v3 — 3GPP UMa LOS/NLOS, Random Waypoint mobility, A3/A4/A5 events |
 | Models | LR · RF · XGBoost · LSTM · GRU · Stacking Ensemble |
 | Best F1 | Random Forest (F1 = 0.521) |
 | Best AUC | XGBoost (ROC-AUC = 0.912) |
-| Champion | Stacking Ensemble (AUC = 0.9119) — highest combined precision + AUC |
+| Champion | Random Forest (score = 0.6×F1 + 0.4×AUC) — see [champion criterion](#champion-model--model-promotion) |
 | MLOps | MLflow experiment tracking · DVC pipeline · GitHub Actions CI |
 
 ---
@@ -153,6 +153,13 @@ Simulates a 1000×1000 m LTE network using three modules in `src/`:
 - **Multi-factor HO failure** — weighted combination of SINR sigmoid (50%), speed (15%), target RSRP (15%), sustained low RSRP (20%); ~20% overall failure rate
 - **Ping-pong hysteresis** — +3 dB extra margin on the reverse cell pair for 20 steps after a ping-pong
 
+#### Label lookahead note {#label-lookahead-note}
+
+`handover_soon` looks **3 steps ahead** (3 s at 1 s/step).  This is a deliberate tradeoff:
+- **Shorter horizon (1–2 s)** — higher achievable precision (less noise), but the prediction arrives too late for the network to pre-configure the target cell.
+- **3-step horizon** — gives the scheduler ~3 s of preparation time, which is sufficient for standard X2-based handover signalling.
+- **Longer horizon (5–10 s)** — more operationally useful but label noise increases sharply because mobility is unpredictable over many seconds, making the positive class harder to separate and reducing max achievable precision.
+
 **Dataset columns:**
 
 | Column | Description |
@@ -171,8 +178,8 @@ Simulates a 1000×1000 m LTE network using three modules in `src/`:
 | `l3_rsrp_serving` | L3-filtered serving RSRP — what HO logic sees (dBm) |
 | `l3_rsrp_neighbor` | L3-filtered neighbour RSRP (dBm) |
 | `ue_speed` | UE speed (m/s) |
-| `pos_x`, `pos_y` | UE position (m) |
-| `los_flag` | 1 if serving link is currently LOS |
+| `pos_x`, `pos_y` | UE position (m) — **simulation-only ground truth**, not available in real LTE deployments; excluded from engineered features |
+| `los_flag` | 1 if serving link is currently LOS — **simulation-only ground truth**, not observable in real networks; excluded from engineered features |
 | `serving_cell_load` | UEs on serving cell |
 | `cell_load_pct` | Serving cell load as percentage (0–100) |
 | `handover_event` | 1 if HO attempt made this step |
@@ -214,28 +221,33 @@ Six models are trained in sequence. Each run is logged to MLflow automatically (
 
 ### Phase 4 — Evaluation (`src/evaluate.py`)
 
-| Model | Precision | Recall | F1 | ROC-AUC |
-|-------|-----------|--------|----|---------|
-| Logistic Regression | 0.315 | 0.852 | 0.460 | 0.894 |
-| **Random Forest** | 0.408 | 0.720 | **0.521** | 0.909 |
-| XGBoost | 0.409 | 0.684 | 0.512 | **0.912** |
-| LSTM | 0.319 | 0.832 | 0.461 | 0.887 |
-| GRU | 0.318 | 0.843 | 0.462 | 0.882 |
-| Stacking Ensemble ★ | **0.517** | 0.322 | 0.397 | 0.912 |
+| Model | Precision | Recall | F1 | ROC-AUC | Score† |
+|-------|-----------|--------|----|---------|--------|
+| Logistic Regression | 0.315 | 0.852 | 0.460 | 0.894 | 0.634 |
+| **Random Forest** ★ | 0.408 | 0.720 | **0.521** | 0.909 | 0.677 |
+| XGBoost | 0.409 | 0.684 | 0.512 | **0.912** | 0.672 |
+| LSTM | 0.319 | 0.832 | 0.461 | 0.887 | 0.631 |
+| GRU | 0.318 | 0.843 | 0.462 | 0.882 | 0.630 |
+| Stacking Ensemble | **0.517** | 0.322 | 0.397 | 0.912 | 0.603 |
 
-★ **Stacking Ensemble** is the current **champion** — it achieves the highest precision of all six models (fewer false alarms) and matches XGBoost on AUC, making it the most suitable model for deployment.
+† Score = 0.6 × F1 + 0.4 × AUC — the champion promotion criterion.
+
+★ **Random Forest** is the current **champion** by weighted score (0.677).  It achieves the best F1 of all six models, meaning it balances recall (catching imminent handovers) against false alarms more effectively than any other model.
+
+**Stacking Ensemble footnote:** The ensemble's low F1 (0.397) does not disqualify it — its AUC of 0.912 shows excellent discriminative ability at all thresholds, and its precision of 0.517 is the highest of any model.  However, at the default 0.5 threshold its recall (0.322) is too low to be operationally safe: more than two-thirds of imminent handovers go unpredicted, which would cause connectivity drops.  Lowering the threshold to 0.25–0.30 substantially recovers recall at the cost of more false alarms.  The weighted score criterion reflects this by penalising low F1, so the Stacking Ensemble is not promoted despite its high AUC.
 
 **Random Forest** maximises F1. **XGBoost** and **Stacking** are effectively tied on AUC. **LSTM/GRU** capture raw temporal RSRP trajectories without manual feature engineering.
 
 ### Phase 5 — SHAP Explanation (`src/explain.py`)
 
-Computes SHAP values for the three fastest-to-explain models and saves nine plots to `reports/shap/`:
+Computes SHAP values for four models and saves twelve plots to `reports/shap/`:
 
 | Model | Explainer | Why this one |
 |-------|-----------|--------------|
 | Logistic Regression | `LinearExplainer` | Exact, analytical — instant |
 | Random Forest | `TreeExplainer` | Exact tree-path SHAP — fast |
 | XGBoost | `TreeExplainer` | Exact tree-path SHAP — fast |
+| Stacking Ensemble | `KernelExplainer` | Model-agnostic; features are the 3 base-model output probabilities — shows which base model drives each prediction |
 
 Three plot types per model:
 
@@ -245,7 +257,7 @@ Three plot types per model:
 | Beeswarm | `shap_summary_<model>.png` | Per-sample SHAP distribution, coloured by feature value |
 | Waterfall | `shap_waterfall_<model>.png` | Single positive prediction decomposed feature-by-feature |
 
-LSTM, GRU, and Stacking are excluded (DeepExplainer/KernelExplainer would take minutes and produce noisier values).
+LSTM and GRU are excluded (DeepExplainer would take minutes and produce noisier values than TreeExplainer).
 
 SHAP plots are also logged as artifacts into each model's MLflow run under the `shap/` sub-directory.
 
@@ -391,7 +403,10 @@ for r in runs:
 
 ## Champion Model & Model Promotion
 
-After evaluation, `scripts/promote_best_model.py` selects the run with the highest `test_roc_auc` and copies its artifact to `models/champion/`:
+After evaluation, `scripts/promote_best_model.py` selects the run with the highest **weighted score (0.6 × F1 + 0.4 × AUC)** and copies its artifact to `models/champion/`.
+
+**Why F1 is weighted higher than AUC:**  
+In LTE handover prediction, a missed handover (false negative) causes an immediate connectivity drop and potential Radio Link Failure, which requires recovery signalling and degrades user experience.  A false alarm (false positive) merely triggers a preparation phase that the network aborts within milliseconds — a much lower cost.  F1 penalises false negatives more directly than AUC, so it is weighted at 60 % to reflect this cost asymmetry.  Pure AUC optimisation can crown a model that achieves high discriminative ability but sets its decision boundary so conservatively that it misses most real handovers at the default threshold.
 
 ```bash
 python scripts/promote_best_model.py
@@ -439,19 +454,22 @@ DVC detects which stages are stale (inputs changed) and only re-runs those. Run 
 | `TreeExplainer` | XGBoost, Random Forest | Fast — exact tree-path computation |
 | `LinearExplainer` | Logistic Regression | Instant — analytical solution |
 
-Plots are saved to `reports/shap/` — nine files total (three per model):
+Plots are saved to `reports/shap/` — twelve files total (three per model):
 
 ```
 reports/shap/
 ├── shap_bar_logistic_regression.png
 ├── shap_bar_random_forest.png
 ├── shap_bar_xgboost.png
+├── shap_bar_stacking_ensemble.png
 ├── shap_summary_logistic_regression.png
 ├── shap_summary_random_forest.png
 ├── shap_summary_xgboost.png
+├── shap_summary_stacking_ensemble.png
 ├── shap_waterfall_logistic_regression.png
 ├── shap_waterfall_random_forest.png
-└── shap_waterfall_xgboost.png
+├── shap_waterfall_xgboost.png
+└── shap_waterfall_stacking_ensemble.png
 ```
 
 **Bar chart** — global importance ranked by mean |SHAP|. The top features across all three models are `rsrp_diff`-related deltas and rolling statistics, confirming that the rate of change in the serving/neighbour RSRP gap is the strongest predictor of an imminent handover.
