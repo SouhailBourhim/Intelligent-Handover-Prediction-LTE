@@ -1,1 +1,4 @@
-
+[core]
+    remote = localstore
+['remote "localstore"']
+    url = /Users/apple/dvc-store
