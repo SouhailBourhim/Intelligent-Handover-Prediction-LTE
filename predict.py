@@ -16,9 +16,30 @@ python predict.py --csv path/to/measurements.csv
 # Show which model is currently champion:
 python predict.py --info
 
+Minimum required input columns
+-------------------------------
+The following raw signal columns are required for any prediction.  All other
+columns (lags, rolling stats, deltas) are engineered automatically from these,
+but if more than 10 % of engineered features are missing for a given row, that
+row is skipped with a warning rather than silently filled with zeros.
+
+  rsrp_serving     — instantaneous serving-cell RSRP (dBm)
+  rsrq_serving     — serving-cell RSRQ (dB)
+  sinr             — SINR from L3-filtered RSRP (dB)
+  cqi              — Channel Quality Indicator (1–15)
+  rsrp_neighbor    — best-neighbour instantaneous RSRP (dBm)
+  rsrq_neighbor    — best-neighbour RSRQ (dB)
+  rsrp_diff        — rsrp_serving − rsrp_neighbor (dB)
+  l3_rsrp_serving  — L3-filtered serving RSRP (dBm)
+  l3_rsrp_neighbor — L3-filtered neighbour RSRP (dBm)
+  ue_speed         — UE speed (m/s)
+
+Optional context columns (improve lag/delta accuracy when present):
+  ue_id, timestamp, serving_cell_id, cell_load_pct
+
 Outputs
 -------
-For every input row the script prints:
+For every scored row the script prints:
   ue_id (if present)  |  probability  |  decision (HANDOVER / ok)  |  threshold used
 
 Exit code 0 = success, 1 = champion model not found (run the pipeline first).
@@ -104,26 +125,66 @@ def _load_scaler():
     return joblib.load(SCALER_PATH)
 
 
-def _prepare_features(df: pd.DataFrame, feat_cols: list[str], scaler) -> np.ndarray:
+_ENGINEERED_SUFFIXES = ("_lag", "_roll", "_delta")
+_MISSING_THRESHOLD   = 0.10   # warn + skip row if > 10 % of engineered features are absent
+
+
+def _is_engineered(col: str) -> bool:
+    return any(col.endswith(s) or s in col for s in _ENGINEERED_SUFFIXES)
+
+
+def _prepare_features(
+    df: pd.DataFrame,
+    feat_cols: list[str],
+    scaler,
+) -> tuple[np.ndarray, np.ndarray]:
     """
-    Fill any missing engineered columns with 0 (graceful degradation when the
-    caller supplies only raw signal columns), scale, and return float32 array.
+    Build the feature matrix from df.
+
+    Returns
+    -------
+    X          : float32 array of shape (n_valid, n_features)
+    valid_mask : bool array of shape (n_rows,); False rows were skipped
+                 because > 10 % of their engineered features were missing.
     """
+    eng_cols = [c for c in feat_cols if _is_engineered(c)]
+    n_eng    = len(eng_cols) if eng_cols else 1   # avoid div-by-zero on unusual inputs
+
+    # Columns entirely absent from the input → mark as missing for every row
+    absent_cols  = [c for c in eng_cols if c not in df.columns]
+    n_absent     = len(absent_cols)
+
+    # Fill absent columns with NaN so per-row check works uniformly
     for col in feat_cols:
         if col not in df.columns:
-            df[col] = 0.0
+            df[col] = np.nan
 
-    X = df[feat_cols].fillna(0).values.astype(np.float32)
+    # Per-row missing fraction for engineered features
+    eng_present = [c for c in eng_cols if c not in absent_cols]
+    per_row_nan = df[eng_present].isna().sum(axis=1) if eng_present else pd.Series(0, index=df.index)
+    per_row_missing_frac = (per_row_nan + n_absent) / n_eng
+
+    valid_mask = (per_row_missing_frac <= _MISSING_THRESHOLD).values
+
+    n_skip = (~valid_mask).sum()
+    if n_skip > 0:
+        print(
+            f"  Warning: {n_skip} row(s) have >{_MISSING_THRESHOLD:.0%} engineered "
+            f"features missing and will be skipped. Supply lag/rolling/delta history "
+            f"columns to score these rows. Missing columns (sample): "
+            f"{absent_cols[:5]}{'...' if len(absent_cols) > 5 else ''}"
+        )
+
+    df_valid = df[valid_mask].copy()
+    X = df_valid[feat_cols].fillna(0).values.astype(np.float32)
 
     if scaler is not None:
         import warnings
-        # Scaler was fit on a DataFrame; suppress the feature-name warning when
-        # we pass a plain numpy array (behaviour is identical).
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", UserWarning)
             X = scaler.transform(X).astype(np.float32)
 
-    return X
+    return X, valid_mask
 
 
 def _score_sklearn(model, X: np.ndarray) -> np.ndarray:
@@ -199,9 +260,21 @@ def _print_results(df_input: pd.DataFrame, probs: np.ndarray, threshold: float):
 
 # ── CLI ────────────────────────────────────────────────────────────────────────
 
+_REQUIRED_COLS_HELP = """
+minimum required input columns:
+  rsrp_serving, rsrq_serving, sinr, cqi,
+  rsrp_neighbor, rsrq_neighbor, rsrp_diff,
+  l3_rsrp_serving, l3_rsrp_neighbor, ue_speed
+
+rows with >10%% of engineered features missing are skipped with a warning.
+"""
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Score UE measurements against the champion handover model."
+        description="Score UE measurements against the champion handover model.",
+        epilog=_REQUIRED_COLS_HELP,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     group = parser.add_mutually_exclusive_group()
     group.add_argument(
@@ -258,7 +331,12 @@ def main():
         df_input = pd.read_csv(csv_path)
 
     # ── feature prep + scoring ─────────────────────────────────────────────────
-    X = _prepare_features(df_input.copy(), feat_cols, scaler)
+    X, valid_mask = _prepare_features(df_input.copy(), feat_cols, scaler)
+
+    if len(X) == 0:
+        print("No rows left to score after filtering. "
+              "Provide engineered-feature columns (lags, rolling stats, deltas).")
+        sys.exit(1)
 
     if model_type == "sklearn":
         if champ_meta["model_name"] == "stacking_ensemble":
@@ -272,7 +350,7 @@ def main():
     # ── output ────────────────────────────────────────────────────────────────
     print(f"\nModel: {champ_meta['model_name']}  |  "
           f"AUC={champ_meta.get('test_roc_auc', 0):.4f}")
-    _print_results(df_input, probs, args.threshold)
+    _print_results(df_input[valid_mask].reset_index(drop=True), probs, args.threshold)
 
 
 if __name__ == "__main__":

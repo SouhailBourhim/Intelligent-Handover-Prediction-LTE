@@ -47,6 +47,7 @@ REPORTS_DIR   = ROOT / "reports" / "shap"
 LABEL         = "handover_soon"
 TOP_N         = 20      # features shown in summary / bar plots
 BG_SAMPLES    = 500     # background / explanation sample size
+KERNEL_BG     = 200     # background samples for KernelExplainer (stacking)
 
 # MLflow (optional)
 try:
@@ -259,13 +260,127 @@ def explain_linear_model(model, X: np.ndarray, y: np.ndarray,
     return paths
 
 
+# ── Stacking Ensemble: KernelExplainer on meta-features ───────────────────────
+
+def _build_stacking_meta(feat_cols: list[str], test_df) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Compute meta-features [xgb_prob, rf_prob, lstm_prob] for all LSTM-valid
+    rows in test_df.  The LSTM requires a full SEQ_LEN look-back window, so
+    the row count is smaller than len(test_df).
+    """
+    import torch
+    from src.models import LSTMClassifier, SequenceDataset, SEQ_LEN, _build_seq_row_indices
+
+    xgb = joblib.load(MODELS_DIR / "xgboost.pkl")
+    rf  = joblib.load(MODELS_DIR / "random_forest.pkl")
+
+    lstm_net = LSTMClassifier(input_size=len(feat_cols))
+    lstm_net.load_state_dict(torch.load(MODELS_DIR / "lstm.pt", map_location="cpu"))
+    lstm_net.eval()
+
+    ds     = SequenceDataset(test_df, feat_cols, seq_len=SEQ_LEN)
+    loader = torch.utils.data.DataLoader(ds, batch_size=512, shuffle=False)
+    lstm_probs = []
+    with torch.no_grad():
+        for xb, _ in loader:
+            lstm_probs.extend(torch.sigmoid(lstm_net(xb)).numpy())
+    lstm_probs  = np.array(lstm_probs)
+    row_indices = _build_seq_row_indices(test_df, seq_len=SEQ_LEN)
+
+    test_sub = test_df.loc[row_indices].copy()
+    X_sub    = test_sub[feat_cols].fillna(0).values
+
+    xgb_probs = xgb.predict_proba(X_sub.astype(np.float32))[:, 1]
+    rf_probs  = rf.predict_proba(X_sub)[:, 1]
+
+    meta_X = np.column_stack([xgb_probs, rf_probs, lstm_probs]).astype(np.float32)
+    y_sub  = test_sub[LABEL].values.astype(int)
+    return meta_X, y_sub
+
+
+def explain_stacking_ensemble(stacking_model, feat_cols: list[str], test_df) -> list[Path]:
+    """
+    KernelExplainer for the Stacking Ensemble.
+
+    The ensemble's "features" are the three base-model output probabilities
+    [XGB prob, RF prob, LSTM prob], so the SHAP plots show which base model
+    drives each prediction rather than which raw radio signal does.
+
+    Uses a stratified 200-sample background subset to keep runtime acceptable
+    (~30 s for nsamples=200 with 3 features).
+    """
+    import shap
+
+    print("  [Stacking Ensemble] computing meta-features for test set…")
+    meta_X, y_sub = _build_stacking_meta(feat_cols, test_df)
+
+    # Stratified sample of KERNEL_BG rows for background + explanation
+    rng     = np.random.default_rng(42)
+    pos_idx = np.where(y_sub == 1)[0]
+    neg_idx = np.where(y_sub == 0)[0]
+    n_pos   = min(KERNEL_BG // 2, len(pos_idx))
+    n_neg   = min(KERNEL_BG - n_pos, len(neg_idx))
+    bg_idx  = np.concatenate([
+        rng.choice(pos_idx, n_pos, replace=False),
+        rng.choice(neg_idx, n_neg, replace=False),
+    ])
+    meta_bg = meta_X[bg_idx]
+    y_bg    = y_sub[bg_idx]
+
+    meta_names = ["XGB probability", "RF probability", "LSTM probability"]
+
+    print(f"  [Stacking Ensemble] building KernelExplainer ({len(meta_bg)}-sample background)…")
+    # Wrap predict_proba to return class-1 probability (scalar output)
+    def _predict(x):
+        return stacking_model.predict_proba(x.astype(np.float32))[:, 1]
+
+    explainer = shap.KernelExplainer(_predict, meta_bg)
+    shap_vals = explainer.shap_values(meta_bg, nsamples=200, silent=True)
+    # KernelExplainer with scalar output returns a single (n, k) array
+    if isinstance(shap_vals, list):
+        shap_vals = shap_vals[0]
+
+    paths = [
+        _bar_plot(shap_vals, meta_names, "Stacking Ensemble"),
+        _summary_plot(shap_vals, meta_bg, meta_names, "Stacking Ensemble"),
+    ]
+
+    # Waterfall — manually construct Explanation to avoid calling explainer() again
+    i       = _first_positive(y_bg)
+    wf_vals = explainer.shap_values(meta_bg[i : i + 1], nsamples=200, silent=True)
+    if isinstance(wf_vals, list):
+        wf_vals = wf_vals[0]
+    base_val = float(
+        explainer.expected_value[0]
+        if hasattr(explainer.expected_value, "__len__")
+        else explainer.expected_value
+    )
+    wf_expl = shap.Explanation(
+        values        = wf_vals[0],
+        base_values   = base_val,
+        data          = meta_bg[i],
+        feature_names = meta_names,
+    )
+    plt.figure(figsize=(9, 5))
+    shap.plots.waterfall(wf_expl, show=False)
+    plt.title(
+        f"Prediction Explanation — Stacking Ensemble (positive sample #{i})",
+        fontsize=11, pad=14,
+    )
+    wf_path = REPORTS_DIR / "shap_waterfall_stacking_ensemble.png"
+    _save_fig(wf_path)
+    paths.append(wf_path)
+
+    return paths
+
+
 # ── Main entry ─────────────────────────────────────────────────────────────────
 
 def run_explanation():
     print("Phase 5 — SHAP Explanation")
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
-    X, y, feat_cols, _ = _load_test()
+    X, y, feat_cols, test_df = _load_test()
     print(f"  Test set: {X.shape[0]} rows × {X.shape[1]} features")
     print(f"  Positive rate: {y.mean():.1%}  |  background sample: {BG_SAMPLES} rows\n")
 
@@ -300,11 +415,24 @@ def run_explanation():
     else:
         print("  XGBoost model not found — skipping.")
 
+    # ── Stacking Ensemble ──────────────────────────────────────────────────────
+    stack_path = MODELS_DIR / "stacking_ensemble.pkl"
+    if stack_path.exists():
+        try:
+            stack = joblib.load(stack_path)
+            paths = explain_stacking_ensemble(stack, feat_cols, test_df)
+            all_paths["Stacking Ensemble"] = paths
+        except Exception as e:
+            print(f"  Stacking Ensemble SHAP failed: {e}")
+    else:
+        print("  Stacking Ensemble model not found — skipping.")
+
     # ── MLflow: log SHAP plots as artifacts ───────────────────────────────────
     mlf_key_map = {
         "Logistic Regression": "Logistic Regression",
         "Random Forest":       "Random Forest",
         "XGBoost":             "XGBoost",
+        "Stacking Ensemble":   "Stacking Ensemble",
     }
     for display_name, run_key in mlf_key_map.items():
         if display_name in all_paths:

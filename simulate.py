@@ -48,7 +48,7 @@ from src.handover_logic import HO, HOConfig, l3_update, evaluate_handover
 
 # ── Simulation parameters ─────────────────────────────────────────────────────
 
-SIM_STEPS           = 1800    # simulation steps (= seconds at DT=1 s)
+SIM_STEPS           = 2*1800    # simulation steps (= seconds at DT=1 s)
 NUM_UES_PED         = 8       # pedestrian UEs
 NUM_UES_VEH         = 7       # vehicle UEs
 LABEL_K             = 3       # look-ahead steps for handover_soon label
