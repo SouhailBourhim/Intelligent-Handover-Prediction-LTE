@@ -4,10 +4,10 @@
 
 ```
 simulate.py  ──►  run_pipeline.py (phases 2–5)  ──►  app/dashboard.py
-                       │
-              ┌────────┴─────────┐
-        src/features.py     src/models.py
-              │                  │
+                       │                                    │
+              ┌────────┴─────────┐                 🔮 Live Prediction tab
+        src/features.py     src/models.py          (generate_test_dataset.py
+              │                  │                  or predict.py --csv)
         data/processed/    models/*.pkl / *.pt
               │                  │
         src/evaluate.py ◄────────┘
@@ -21,13 +21,15 @@ simulate.py  ──►  run_pipeline.py (phases 2–5)  ──►  app/dashboard
 
 ## Module responsibilities
 
-### Simulation layer (`src/`)
+### Simulation layer (`src/` + standalone scripts)
 
 | Module | Responsibility |
 |--------|---------------|
 | `radio_model.py` | 3GPP UMa LOS/NLOS path loss, Gudmundson AR(1) shadow fading, AR(1) complex Gaussian fast fading, L3 EMA filter, SINR/RSRQ/CQI computation |
 | `mobility.py` | Random Waypoint model with direction persistence; `UE` dataclass holds full per-UE state (position, channel, HO FSM) |
 | `handover_logic.py` | A3/A4/A5 event classification, velocity-aware TTT, multi-factor HO failure sigmoid, ping-pong hysteresis |
+| `simulate.py` | Assembles the full 15-UE / 1800-step training dataset (`data/raw/dataset.csv`) |
+| `generate_test_dataset.py` | Standalone script — generates smaller CSVs for dashboard live-prediction and `predict.py` testing; 4 scenario presets (`default`, `vehicle`, `stable`, `cell_edge`); pre-generated samples in `data/test_scenarios/` |
 
 ### Pipeline layer
 
@@ -46,7 +48,8 @@ simulate.py  ──►  run_pipeline.py (phases 2–5)  ──►  app/dashboard
 | `dvc.yaml` | Five-stage reproducible pipeline: simulate → features → train → evaluate → explain |
 | `.github/workflows/ci.yml` | GitHub Actions — runs `dvc repro` end-to-end on every push to `main` |
 | `scripts/promote_best_model.py` | Queries MLflow for highest `test_roc_auc`, copies winner to `models/champion/` |
-| `predict.py` | Inference entry point — loads champion model, handles sklearn/PyTorch/stacking |
+| `predict.py` | CLI inference entry point — loads champion model, handles sklearn/PyTorch/stacking; also powers the dashboard Live Prediction tab |
+| `app/dashboard.py` | Eight-tab Streamlit app — KPI charts, HO timeline, risk gauge, 🔮 Live Prediction, model comparison, SHAP, MLflow, mobility map |
 
 ## Key design decisions
 
