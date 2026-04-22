@@ -20,6 +20,11 @@ python run_pipeline.py --phase 5   # SHAP explanations
 # Promote the best model to models/champion/
 python scripts/promote_best_model.py
 
+# Generate a test CSV for live prediction (4 scenarios: default, vehicle, stable, cell_edge)
+python generate_test_dataset.py                               # default scenario
+python generate_test_dataset.py --scenario vehicle --ues 8   # vehicle scenario
+# Pre-generated samples already in data/test_scenarios/
+
 # Streamlit dashboard
 streamlit run app/dashboard.py
 

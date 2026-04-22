@@ -26,6 +26,7 @@ A full machine-learning pipeline that predicts **imminent handover events** (`ha
 ├── simulate.py                   # Phase 1 — LTE network simulation (v3)
 ├── run_pipeline.py               # Master runner (phases 2–5)
 ├── predict.py                    # Inference script — score new measurements
+├── generate_test_dataset.py      # Standalone test-CSV generator (4 scenario presets)
 ├── requirements.txt
 ├── dvc.yaml                      # DVC pipeline definition (5 stages)
 ├── .python-version               # Pins Python 3.11
@@ -44,7 +45,8 @@ A full machine-learning pipeline that predicts **imminent handover events** (`ha
 │
 ├── data/
 │   ├── raw/dataset.csv           # 27k-row simulated dataset
-│   └── processed/                # train/val/test splits + meta.json
+│   ├── processed/                # train/val/test splits + meta.json
+│   └── test_scenarios/           # Pre-generated CSVs for dashboard Live Prediction
 │
 ├── notebooks/
 │   ├── 01_data_generation.ipynb
@@ -68,7 +70,7 @@ A full machine-learning pipeline that predicts **imminent handover events** (`ha
 │   ├── scaler.pkl
 │   ├── mlflow_run_ids.json           # Maps model name → MLflow run ID
 │   └── champion/
-│       ├── stacking_ensemble.pkl     # Copy of the promoted champion
+│       ├── random_forest.pkl         # Copy of the promoted champion
 │       └── metadata.json            # Name, AUC, F1, promotion timestamp
 │
 ├── reports/
@@ -79,7 +81,7 @@ A full machine-learning pipeline that predicts **imminent handover events** (`ha
 │
 ├── docs/                            # Architecture and setup reference
 ├── app/
-│   └── dashboard.py                 # Streamlit dashboard (7 tabs)
+│   └── dashboard.py                 # Streamlit dashboard (8 tabs)
 ├── mlflow.db                        # MLflow SQLite store (auto-created, gitignored)
 └── .github/
     └── workflows/
@@ -263,13 +265,14 @@ SHAP plots are also logged as artifacts into each model's MLflow run under the `
 
 ### Phase 6 — Dashboard (`app/dashboard.py`)
 
-Interactive Streamlit app with seven tabs:
+Interactive Streamlit app with eight tabs:
 
 | Tab | Content |
 |-----|---------|
 | 📊 Radio KPIs | RSRP, SINR, RSRQ, CQI charts with handover markers |
 | 🔁 HO Timeline | Scatter of handover events by UE and target cell |
 | ⚠️ Risk | Per-UE risk heatmap + gauge for the selected model |
+| 🔮 Live Prediction | Upload a CSV (or type values manually) to score new measurements with the champion model in real time |
 | 📋 Model Comparison | Metrics table parsed from `reports/evaluation.txt` |
 | 🔍 SHAP Explanations | Bar / beeswarm / waterfall plots; on-demand recompute button |
 | 🧪 MLflow Runs | Live query of `mlflow.db` — val F1, test AUC, status |
@@ -300,7 +303,7 @@ python predict.py --csv measurements.csv --threshold 0.35
 **Example output:**
 
 ```
-Model: stacking_ensemble  |  AUC=0.9119
+Model: random_forest  |  AUC=0.9090
 
     UE     Prob    Decision  (threshold=0.50)
 ───────────────────────────────────────────
@@ -315,6 +318,47 @@ The script handles all model types automatically:
 - **Stacking Ensemble** — transparently loads base models and composes meta-features
 
 Input CSVs only need the raw signal columns; any missing engineered features (lags, rolling stats, deltas) are filled with zero so the script works with minimal inputs.
+
+---
+
+## Test Dataset Generation
+
+`generate_test_dataset.py` produces ready-to-use CSVs that can be uploaded directly to the **🔮 Live Prediction** tab of the Streamlit dashboard (or passed to `predict.py --csv`).
+
+Four built-in scenario presets cover different deployment conditions:
+
+| Scenario | Description | Approx. HO rate |
+|----------|-------------|----------------|
+| `default` | Mixed pedestrians + vehicles, typical placement | ~12 % |
+| `vehicle` | All fast vehicles (8–20 m/s), high mobility stress | ~15 % |
+| `stable` | Slow pedestrians clustered near BSs, low interference | ~5 % |
+| `cell_edge` | UEs seeded along cell boundaries — worst-case RSRP | ~15 % |
+
+```bash
+# Default run — default scenario, 5 UEs, 300 steps, seed 42
+python generate_test_dataset.py
+
+# Vehicle scenario
+python generate_test_dataset.py --scenario vehicle --ues 8 --steps 500
+
+# Cell-edge scenario with custom output path
+python generate_test_dataset.py --scenario cell_edge --ues 6 --steps 400 --output my_test.csv
+
+# Stable scenario for sanity checks
+python generate_test_dataset.py --scenario stable --ues 3 --steps 200
+```
+
+Four pre-generated sample files are committed to `data/test_scenarios/` for immediate use without running the script:
+
+```
+data/test_scenarios/
+├── default_ues5_steps300_seed42.csv     # 1500 rows, 12.5 % HO rate
+├── vehicle_ues4_steps200_seed42.csv     # 800 rows,  15.1 % HO rate
+├── stable_ues3_steps200_seed42.csv      # 600 rows,   5.0 % HO rate
+└── cell_edge_ues5_steps200_seed42.csv   # 1000 rows, 15.0 % HO rate
+```
+
+Each output CSV contains all raw signal columns expected by `predict.py` and the dashboard, plus a `handover_soon` ground-truth column so you can evaluate prediction accuracy after scoring.
 
 ---
 
@@ -414,7 +458,7 @@ python scripts/promote_best_model.py
 
 ```
 models/champion/
-├── stacking_ensemble.pkl   # copy of the winning model
+├── random_forest.pkl       # copy of the winning model
 └── metadata.json           # { model_name, run_id, test_roc_auc, test_f1, promoted_at }
 ```
 
@@ -484,8 +528,8 @@ reports/shap/
 
 `.github/workflows/ci.yml` runs on every push and pull request to `main`:
 
-1. **Install dependencies** — `pip install -r requirements.txt && pip install dvc`
-2. **Init DVC** — `dvc init --no-scm`
+1. **Install dependencies** — `pip install -r requirements.txt` (includes `dvc`)
+2. **Restore DVC cache** — `actions/cache` keyed to `dvc.yaml + src/**/*.py + simulate.py + requirements.txt`; unchanged stages are skipped on cache hit
 3. **Reproduce pipeline** — `dvc repro` (all five stages: simulate → features → train → evaluate → explain)
 4. **Promote champion** — `python scripts/promote_best_model.py`
 5. **Upload artifacts** — `reports/` and `models/champion/metadata.json` retained for 30 days
