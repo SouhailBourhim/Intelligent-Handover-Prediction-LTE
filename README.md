@@ -8,7 +8,7 @@ GitHub Actions
 
 There is no public dataset for this task, so the pipeline starts one layer earlier than most: a 3GPP
 UMa radio simulator (path loss, shadow/fast fading, SINR, CQI) with Random Waypoint mobility and real
-A3/A4/A5 event logic generates the 27,000-row dataset the models train on. **F1 of 0.521 is the honest
+A3/A4/A5 event logic generates the 54,000-row dataset the models train on. **F1 of 0.550 is the honest
 result** — handover events are rare and the label is a 3-step lookahead, so this is a hard imbalanced
 problem rather than an underperforming model.
 
@@ -20,12 +20,12 @@ problem rather than an underperforming model.
 |------|--------|
 | Task | Binary time-series classification |
 | Label | `handover_soon = 1` if a successful HO occurs within the next 3 steps — see [label note](#label-lookahead-note) |
-| Dataset | 27,000 rows · 15 UEs · 1,800 s simulation |
+| Dataset | 54,000 rows · 15 UEs · 3,600 s simulation |
 | Simulator | v3 — 3GPP UMa LOS/NLOS, Random Waypoint mobility, A3/A4/A5 events |
 | Models | LR · RF · XGBoost · LSTM · GRU · Stacking Ensemble |
-| Best F1 | Random Forest (F1 = 0.521) |
-| Best AUC | XGBoost (ROC-AUC = 0.912) |
-| Champion | Random Forest (score = 0.6×F1 + 0.4×AUC) — see [champion criterion](#champion-model--model-promotion) |
+| Best F1 | XGBoost (F1 = 0.550) |
+| Best AUC | Stacking Ensemble (ROC-AUC = 0.919) |
+| Champion | XGBoost (score = 0.6×F1 + 0.4×AUC) — see [champion criterion](#champion-model--model-promotion) |
 | MLOps | MLflow experiment tracking · DVC pipeline · GitHub Actions CI |
 
 ---
@@ -80,7 +80,7 @@ problem rather than an underperforming model.
 │   ├── scaler.pkl
 │   ├── mlflow_run_ids.json           # Maps model name → MLflow run ID
 │   └── champion/
-│       ├── random_forest.pkl         # Copy of the promoted champion
+│       ├── xgboost.pkl               # Copy of the promoted champion
 │       └── metadata.json            # Name, AUC, F1, promotion timestamp
 │
 ├── reports/
@@ -235,20 +235,22 @@ Six models are trained in sequence. Each run is logged to MLflow automatically (
 
 | Model | Precision | Recall | F1 | ROC-AUC | Score† |
 |-------|-----------|--------|----|---------|--------|
-| Logistic Regression | 0.315 | 0.852 | 0.460 | 0.894 | 0.634 |
-| **Random Forest** ★ | 0.408 | 0.720 | **0.521** | 0.909 | 0.677 |
-| XGBoost | 0.409 | 0.684 | 0.512 | **0.912** | 0.672 |
-| LSTM | 0.319 | 0.832 | 0.461 | 0.887 | 0.631 |
-| GRU | 0.318 | 0.843 | 0.462 | 0.882 | 0.630 |
-| Stacking Ensemble | **0.517** | 0.322 | 0.397 | 0.912 | 0.603 |
+| Logistic Regression | 0.352 | 0.869 | 0.501 | 0.898 | 0.660 |
+| Random Forest | 0.433 | 0.736 | 0.545 | 0.911 | 0.691 |
+| **XGBoost** ★ | 0.426 | 0.778 | **0.550** | 0.919 | 0.698 |
+| LSTM | 0.342 | 0.781 | 0.476 | 0.881 | 0.638 |
+| GRU | 0.332 | 0.809 | 0.471 | 0.865 | 0.628 |
+| Stacking Ensemble | **0.561** | 0.403 | 0.469 | **0.919** | 0.649 |
 
 † Score = 0.6 × F1 + 0.4 × AUC — the champion promotion criterion.
 
-★ **Random Forest** is the current **champion** by weighted score (0.677).  It achieves the best F1 of all six models, meaning it balances recall (catching imminent handovers) against false alarms more effectively than any other model.
+**Reproducibility:** Logistic Regression, Random Forest and XGBoost reproduce these figures exactly (fixed `random_state=42` throughout), so the champion is stable. LSTM, GRU and Stacking are not seeded — `src/models.py` calls no `torch.manual_seed`, and the `WeightedRandomSampler` draws from the unseeded global RNG — so those three rows shift by roughly ±0.015 F1 between runs. This table and the ROC/confusion-matrix figures below come from the same run.
 
-**Stacking Ensemble footnote:** The ensemble's low F1 (0.397) does not disqualify it — its AUC of 0.912 shows excellent discriminative ability at all thresholds, and its precision of 0.517 is the highest of any model.  However, at the default 0.5 threshold its recall (0.322) is too low to be operationally safe: more than two-thirds of imminent handovers go unpredicted, which would cause connectivity drops.  Lowering the threshold to 0.25–0.30 substantially recovers recall at the cost of more false alarms.  The weighted score criterion reflects this by penalising low F1, so the Stacking Ensemble is not promoted despite its high AUC.
+★ **XGBoost** is the current **champion** by weighted score (0.698).  It achieves the best F1 of all six models, meaning it balances recall (catching imminent handovers) against false alarms more effectively than any other model.
 
-**Random Forest** maximises F1. **XGBoost** and **Stacking** are effectively tied on AUC. **LSTM/GRU** capture raw temporal RSRP trajectories without manual feature engineering.
+**Stacking Ensemble footnote:** The ensemble's low F1 (0.469) does not disqualify it — its AUC of 0.919 shows excellent discriminative ability at all thresholds, and its precision of 0.561 is the highest of any model.  However, at the default 0.5 threshold its recall (0.403) is too low to be operationally safe: nearly 60 % of imminent handovers go unpredicted, which would cause connectivity drops.  Lowering the threshold to 0.25–0.30 substantially recovers recall at the cost of more false alarms.  The weighted score criterion reflects this by penalising low F1, so the Stacking Ensemble is not promoted despite its high AUC.
+
+**XGBoost** maximises F1. **XGBoost** and **Stacking** are effectively tied on AUC (0.9188 vs 0.9190). **LSTM/GRU** capture raw temporal RSRP trajectories without manual feature engineering.
 
 ### Phase 5 — SHAP Explanation (`src/explain.py`)
 
@@ -313,7 +315,7 @@ python predict.py --csv measurements.csv --threshold 0.35
 **Example output:**
 
 ```
-Model: random_forest  |  AUC=0.9090
+Model: xgboost  |  AUC=0.9188
 
     UE     Prob    Decision  (threshold=0.50)
 ───────────────────────────────────────────
@@ -468,7 +470,7 @@ python scripts/promote_best_model.py
 
 ```
 models/champion/
-├── random_forest.pkl       # copy of the winning model
+├── xgboost.pkl             # copy of the winning model
 └── metadata.json           # { model_name, run_id, test_roc_auc, test_f1, promoted_at }
 ```
 
