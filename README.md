@@ -1,6 +1,16 @@
 # Intelligent Handover Prediction in LTE Networks using ML
 
-A full machine-learning pipeline that predicts **imminent handover events** (`handover_soon`) in LTE networks from simulated UE radio measurements.
+A full machine-learning pipeline that predicts **imminent handover events** (`handover_soon`) in LTE
+networks from simulated UE radio measurements.
+
+**Stack:** Python 3.11 · scikit-learn · XGBoost · TensorFlow/Keras · MLflow · DVC · SHAP · Streamlit ·
+GitHub Actions
+
+There is no public dataset for this task, so the pipeline starts one layer earlier than most: a 3GPP
+UMa radio simulator (path loss, shadow/fast fading, SINR, CQI) with Random Waypoint mobility and real
+A3/A4/A5 event logic generates the 27,000-row dataset the models train on. **F1 of 0.521 is the honest
+result** — handover events are rare and the label is a 3-step lookahead, so this is a hard imbalanced
+problem rather than an underperforming model.
 
 ---
 
