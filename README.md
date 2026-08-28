@@ -550,8 +550,8 @@ reports/shap/
 
 ## Results
 
-![ROC Curves](reports/roc_curves.png)
-![Confusion Matrices](reports/confusion_matrices.png)
+![ROC Curves](docs/img/roc_curves.png)
+![Confusion Matrices](docs/img/confusion_matrices.png)
 
 ---
 
