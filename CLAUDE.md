@@ -25,6 +25,9 @@ python generate_test_dataset.py                               # default scenario
 python generate_test_dataset.py --scenario vehicle --ues 8   # vehicle scenario
 # Pre-generated samples already in data/test_scenarios/
 
+# Regenerate README figures in docs/img/ (numpy/pandas/matplotlib only)
+python scripts/make_figures.py
+
 # Streamlit dashboard
 streamlit run app/dashboard.py
 
@@ -50,7 +53,7 @@ There is no lint or test suite; the CI runs `dvc repro` end-to-end as the integr
 
 ```
 simulate.py
-  └─ data/raw/dataset.csv (27 k rows, 15 UEs × 1800 s)
+  └─ data/raw/dataset.csv (54 k rows, 15 UEs × 3600 s)
        └─ src/features.py  →  data/processed/{train,val,test}.csv + scaler.pkl + meta.json
             └─ src/models.py  →  models/{lr,rf,xgb,lstm,gru,stacking}.{pkl,pt} + mlflow_run_ids.json
                  ├─ src/evaluate.py  →  reports/{evaluation.txt,roc_curves.png,confusion_matrices.png}
@@ -65,7 +68,7 @@ simulate.py
 - **`radio_model.py`** — 3GPP UMa LOS/NLOS path loss, Gudmundson AR(1) shadow fading, AR(1) complex Gaussian fast fading, L3 EMA filtering (`alpha=0.5`), SINR/RSRQ/CQI computation.
 - **`mobility.py`** — Random Waypoint model with direction persistence (heading blend + noise). `UE` dataclass holds the full per-UE state including per-BS channel state (`shadow`, `ff_i`, `ff_q`, `los`, `l3_rsrp`), handover FSM state (`ttt_counter`, `ho_history`, `ping_pong_*`), and failure counters.
 - **`handover_logic.py`** — A3/A4/A5 event classification, velocity-aware TTT (`velocity_ttt(speed_ms)`), multi-factor sigmoid failure probability (`ho_failure_prob`), and ping-pong hysteresis. The main state machine is `evaluate_handover()`.
-- **`simulate.py`** — Assembles 4 BSs + 15 UEs (8 pedestrians, 7 vehicles), runs 1800-step simulation loop, emits the raw dataset. The label `handover_soon` is set to 1 if any handover occurs within the next 3 steps for that UE.
+- **`simulate.py`** — Assembles 4 BSs + 15 UEs (8 pedestrians, 7 vehicles), runs 3600-step simulation loop, emits the raw dataset. The label `handover_soon` is set to 1 if any handover occurs within the next 3 steps for that UE.
 
 ### Feature engineering (`src/features.py`)
 
@@ -74,7 +77,7 @@ Key constants at module level:
 - Rolling stats are **shifted by 1** to avoid look-ahead; lags are backward-only — no data leakage.
 - Applied to all 8 radio signals (raw + L3-filtered RSRP/RSRQ, SINR, CQI, neighbor RSRP/RSRQ).
 - Split is **temporal** (70/15/15, no shuffling); `StandardScaler` fit on train only.
-- `meta.json` records `feat_cols` (the canonical feature list used everywhere downstream).
+- `meta.json` records `feature_cols` (the canonical feature list used everywhere downstream). It is `SCALE_COLS`, which includes the simulation-only `pos_x`, `pos_y`, `los_flag`.
 
 ### Model training (`src/models.py`)
 
@@ -95,15 +98,15 @@ MLflow logging is wrapped in `try/except`; if the SQLite store (`mlflow.db`) is 
 ### Evaluation & explainability (`src/evaluate.py`, `src/explain.py`)
 
 - `evaluate.py` loads all 6 models and computes precision/recall/F1/ROC-AUC on the held-out test set. It then resumes each MLflow run to append test metrics + plot artifacts.
-- `explain.py` runs SHAP only for LR (LinearExplainer + Independent masker), RF, and XGBoost (TreeExplainer). LSTM/GRU are excluded (DeepExplainer is too slow and noisy). SHAP 0.51 changed `TreeExplainer.shap_values()` to return a 3-D array `(n_samples, n_features, n_classes)`; the code handles both the old list format and the new ndarray.
+- `explain.py` runs SHAP for LR (LinearExplainer + Independent masker), RF and XGBoost (TreeExplainer), and the Stacking Ensemble (KernelExplainer on the 3 meta-features). LSTM/GRU are excluded (DeepExplainer is too slow and noisy). SHAP 0.51 changed `TreeExplainer.shap_values()` to return a 3-D array `(n_samples, n_features, n_classes)`; the code handles both the old list format and the new ndarray.
 
 ### Champion model promotion (`scripts/promote_best_model.py`)
 
-Queries MLflow for the run with the highest `test_roc_auc`. Falls back to parsing `reports/evaluation.txt` if MLflow is unavailable. Copies the winner to `models/champion/` and writes `metadata.json`.
+Queries MLflow for the run with the highest weighted score `0.6 × test_f1 + 0.4 × test_roc_auc`. Falls back to parsing `reports/evaluation.txt` if MLflow is unavailable. Copies the winner to `models/champion/` and writes `metadata.json`.
 
 ### Dashboard (`app/dashboard.py`)
 
-Seven-tab Streamlit app. Reads `data/processed/` CSVs, `models/` files, `reports/shap/` PNGs, and `models/champion/metadata.json`. Displays a champion banner, model-comparison table, per-UE KPI trends, handover timeline, real-time risk gauge, SHAP plots, and MLflow run table.
+Eight-tab Streamlit app. Reads `data/processed/` CSVs, `models/` files, `reports/shap/` PNGs, and `models/champion/metadata.json`. Displays a champion banner, model-comparison table, per-UE KPI trends, handover timeline, real-time risk gauge, SHAP plots, and MLflow run table.
 
 ### Notebooks (`notebooks/`)
 
@@ -118,7 +121,7 @@ All three must be executed with the `lte_venv` kernel (see command above).
 
 - **XGBoost requires float32 inputs** everywhere (training, eval, SHAP). Cast with `.astype(np.float32)`.
 - **macOS OpenMP segfault**: set `OMP_NUM_THREADS=1` before importing `torch` when XGBoost is also imported in the same process.
-- **`meta.json` is the source of truth** for `feat_cols`. Always load feature names from `data/processed/meta.json["feat_cols"]` rather than hard-coding them.
+- **`meta.json` is the source of truth** for features. Always load feature names from `data/processed/meta.json["feature_cols"]` rather than hard-coding them.
 - **`mlflow.db` and `mlruns/`** are gitignored and regenerated by the pipeline. Do not commit them.
 - **Model files (`*.pkl`, `*.pt`)** are gitignored. `data/processed/train.csv`, `val.csv`, `test.csv` are also gitignored; only `meta.json` and `data/raw/dataset.csv` are retained via DVC.
 - All pipeline configuration (signal ranges, TTT, fading params, feature lag windows, model hyperparameters) is in **module-level dataclasses and constants** in each `src/` file — there is no external YAML config.

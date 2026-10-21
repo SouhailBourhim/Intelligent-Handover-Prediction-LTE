@@ -1,318 +1,437 @@
-# Intelligent Handover Prediction in LTE Networks using ML
+# Intelligent Handover Prediction in LTE Networks
 
-A full machine-learning pipeline that predicts **imminent handover events** (`handover_soon`) in LTE
-networks from simulated UE radio measurements.
+[![CI](https://github.com/SouhailBourhim/Intelligent-Handover-Prediction-LTE/actions/workflows/ci.yml/badge.svg)](https://github.com/SouhailBourhim/Intelligent-Handover-Prediction-LTE/actions/workflows/ci.yml)
+![Python 3.11](https://img.shields.io/badge/python-3.11-3776AB?logo=python&logoColor=white)
+![scikit-learn](https://img.shields.io/badge/scikit--learn-F7931E?logo=scikitlearn&logoColor=white)
+![XGBoost](https://img.shields.io/badge/XGBoost-189FDD)
+![PyTorch](https://img.shields.io/badge/PyTorch-EE4C2C?logo=pytorch&logoColor=white)
+![MLflow](https://img.shields.io/badge/MLflow-0194E2?logo=mlflow&logoColor=white)
+![DVC](https://img.shields.io/badge/DVC-13ADC7?logo=dvc&logoColor=white)
+![Streamlit](https://img.shields.io/badge/Streamlit-FF4B4B?logo=streamlit&logoColor=white)
 
-**Stack:** Python 3.11 · scikit-learn · XGBoost · TensorFlow/Keras · MLflow · DVC · SHAP · Streamlit ·
-GitHub Actions
+**Can a model tell, from a phone's radio measurements, that it is about to be handed over to another cell, before the network itself decides?**
 
-There is no public dataset for this task, so the pipeline starts one layer earlier than most: a 3GPP
-UMa radio simulator (path loss, shadow/fast fading, SINR, CQI) with Random Waypoint mobility and real
-A3/A4/A5 event logic generates the 54,000-row dataset the models train on. **F1 of 0.550 is the honest
-result** — handover events are rare and the label is a 3-step lookahead, so this is a hard imbalanced
-problem rather than an underperforming model.
+This project answers that end to end. No public dataset exists for this task, so the pipeline starts one layer lower than most ML projects. It builds a **3GPP-style LTE radio simulator**, generates 54,000 labelled measurements from it, and then trains, tracks, explains and serves six classifiers that predict `handover_soon`: *a successful handover will happen within the next 3 seconds*.
 
----
+![Anatomy of a handover](docs/img/handover_anatomy.png)
 
-## Project Overview
-
-| Item | Detail |
-|------|--------|
-| Task | Binary time-series classification |
-| Label | `handover_soon = 1` if a successful HO occurs within the next 3 steps — see [label note](#label-lookahead-note) |
-| Dataset | 54,000 rows · 15 UEs · 3,600 s simulation |
-| Simulator | v3 — 3GPP UMa LOS/NLOS, Random Waypoint mobility, A3/A4/A5 events |
-| Models | LR · RF · XGBoost · LSTM · GRU · Stacking Ensemble |
-| Best F1 | XGBoost (F1 = 0.550) |
-| Best AUC | Stacking Ensemble (ROC-AUC = 0.919) |
-| Champion | XGBoost (score = 0.6×F1 + 0.4×AUC) — see [champion criterion](#champion-model--model-promotion) |
-| MLOps | MLflow experiment tracking · DVC pipeline · GitHub Actions CI |
+<sub>One real handover from the simulated dataset. The serving cell (blue) fades while a neighbour (orange) rises. Once the neighbour has been 3 dB stronger for the time-to-trigger, the network hands over. The bottom strip is what the models learn to predict: the label switches on **3 s before** the handover, often before the A3 condition is even met.</sub>
 
 ---
 
-## Repository Structure
+## At a glance
 
-```
-├── simulate.py                   # Phase 1 — LTE network simulation (v3)
-├── run_pipeline.py               # Master runner (phases 2–5)
-├── predict.py                    # Inference script — score new measurements
-├── generate_test_dataset.py      # Standalone test-CSV generator (4 scenario presets)
-├── requirements.txt
-├── dvc.yaml                      # DVC pipeline definition (5 stages)
-├── .python-version               # Pins Python 3.11
-│
-├── src/
-│   ├── radio_model.py            # 3GPP UMa path loss, shadow/fast fading, SINR, CQI
-│   ├── mobility.py               # Random Waypoint UE mobility (pedestrian + vehicle)
-│   ├── handover_logic.py         # A3/A4/A5 events, L3 filter, TTT, HO failure, ping-pong
-│   ├── features.py               # Phase 2 — feature engineering + train/val/test split
-│   ├── models.py                 # Phase 3 — all 6 models + MLflow logging
-│   ├── evaluate.py               # Phase 4 — metrics, ROC curves, confusion matrices
-│   └── explain.py                # Phase 5 — SHAP explanations (LR, RF, XGBoost)
-│
-├── scripts/
-│   └── promote_best_model.py     # Queries MLflow, copies best model to models/champion/
-│
-├── data/
-│   ├── raw/dataset.csv           # 27k-row simulated dataset
-│   ├── processed/                # train/val/test splits + meta.json
-│   └── test_scenarios/           # Pre-generated CSVs for dashboard Live Prediction
-│
-├── notebooks/
-│   ├── 01_data_generation.ipynb
-│   ├── 02_feature_engineering.ipynb
-│   ├── 03_modeling.ipynb
-│   ├── 04_evaluation.ipynb
-│   ├── 05_dashboard_preview.ipynb
-│   ├── 06_simulation_realism.ipynb    # v3 radio model analysis
-│   ├── 07_model_impact.ipynb          # model comparison
-│   ├── 08_mlflow_experiment_tracking.ipynb  # MLflow run visualisation
-│   ├── 09_shap_explanations.ipynb           # deep-dive SHAP analysis
-│   └── 10_model_comparison.ipynb            # PR curves, calibration, speed benchmark
-│
-├── models/
-│   ├── logistic_regression.pkl
-│   ├── random_forest.pkl
-│   ├── xgboost.pkl
-│   ├── lstm.pt
-│   ├── gru.pt
-│   ├── stacking_ensemble.pkl
-│   ├── scaler.pkl
-│   ├── mlflow_run_ids.json           # Maps model name → MLflow run ID
-│   └── champion/
-│       ├── xgboost.pkl               # Copy of the promoted champion
-│       └── metadata.json            # Name, AUC, F1, promotion timestamp
-│
-├── reports/
-│   ├── evaluation.txt
-│   ├── roc_curves.png
-│   ├── confusion_matrices.png
-│   └── shap/                        # 9 SHAP plots (bar + beeswarm + waterfall × 3 models)
-│
-├── docs/                            # Architecture and setup reference
-├── app/
-│   └── dashboard.py                 # Streamlit dashboard (8 tabs)
-├── mlflow.db                        # MLflow SQLite store (auto-created, gitignored)
-└── .github/
-    └── workflows/
-        └── ci.yml                   # GitHub Actions CI
-```
+| | |
+|---|---|
+| **Task** | Binary time-series classification of `handover_soon` (3-step look-ahead) |
+| **Data** | 54,000 rows · 15 UEs (8 pedestrians, 7 vehicles) · 4 eNBs · 3,600 s · 10.8 % positive |
+| **Simulator** | 3GPP UMa LOS/NLOS path loss, shadow + fast fading, load-aware SINR, L3 filtering, A3/A4/A5 events, TTT, HO failure, ping-pong |
+| **Features** | 86 (lags, shifted rolling stats, deltas, context) · temporal split · no look-ahead |
+| **Models** | Logistic Regression · Random Forest · XGBoost · LSTM · GRU · Stacking Ensemble |
+| **Champion** | **XGBoost**: F1 0.550 · ROC-AUC 0.919, chosen by `0.6·F1 + 0.4·AUC` |
+| **MLOps** | DVC pipeline · MLflow tracking · automatic champion promotion · GitHub Actions CI |
+| **Serving** | `predict.py` CLI · 8-tab Streamlit dashboard with live CSV scoring |
+
+**On the F1 score:** handovers are rare, and the label asks for a prediction 3 s ahead of a stochastic event. F1 ≈ 0.55 at a ROC-AUC above 0.9 means the models separate the classes well. The ceiling comes from label noise and class imbalance, not from underfitting. See [Results](#4--results).
+
+---
+
+## Contents
+
+1. [Quickstart](#quickstart)
+2. [System architecture](#system-architecture)
+3. [Phase 1: Network simulation](#1--network-simulation)
+4. [Phase 2: Feature engineering](#2--feature-engineering)
+5. [Phase 3: Models](#3--models)
+6. [Phase 4: Results](#4--results)
+7. [Phase 5: Explainability (SHAP)](#5--explainability-shap)
+8. [MLOps: DVC, MLflow, CI, champion promotion](#mlops)
+9. [Serving: dashboard and CLI](#serving)
+10. [Limitations and next steps](#limitations-and-next-steps)
+11. [Repository structure](#repository-structure)
 
 ---
 
 ## Quickstart
 
 ```bash
-# 1. Clone
 git clone https://github.com/SouhailBourhim/Intelligent-Handover-Prediction-LTE.git
 cd Intelligent-Handover-Prediction-LTE
 
-# 2. Create environment  (Python 3.11 recommended)
-python3 -m venv .venv && source .venv/bin/activate
+python3 -m venv .venv && source .venv/bin/activate      # Python 3.11
 pip install -r requirements.txt
 
-# 3. Generate dataset
-python simulate.py
-
-# 4. Run full pipeline (features → training → evaluation → SHAP)
-python run_pipeline.py
-
-# 5. Promote best model to champion
-python scripts/promote_best_model.py
-
-# 6. Launch dashboard
-streamlit run app/dashboard.py
+python simulate.py                     # 1. simulate the network  → data/raw/dataset.csv
+python run_pipeline.py                 # 2–5. features → train → evaluate → SHAP
+python scripts/promote_best_model.py   # pick the champion        → models/champion/
+streamlit run app/dashboard.py         # explore everything in the browser
 ```
 
-Run individual phases:
-
-```bash
-python run_pipeline.py --phase 2   # feature engineering only
-python run_pipeline.py --phase 3   # training only (all 6 models)
-python run_pipeline.py --phase 4   # evaluation only
-python run_pipeline.py --phase 5   # SHAP explanations only
-```
+Run a single phase with `python run_pipeline.py --phase {2,3,4,5}`, or let DVC rerun only stale stages with `dvc repro`.
 
 ---
 
-## Phases
+## System architecture
 
-### Phase 1 — Data Generation (`simulate.py`)
+```mermaid
+flowchart TB
+    subgraph SIM["① Simulation · simulate.py"]
+        direction LR
+        MOB["mobility.py<br/>Random Waypoint<br/>8 pedestrians · 7 vehicles"] --> RAD["radio_model.py<br/>UMa path loss · shadow & fast fading<br/>SINR · RSRQ · CQI"]
+        RAD --> L3["L3 filter<br/>EMA α = 0.5"]
+        L3 --> HOL["handover_logic.py<br/>A3 + velocity-aware TTT<br/>A3/A4/A5 · failure · ping-pong"]
+    end
 
-Simulates a 1000×1000 m LTE network using three modules in `src/`:
+    SIM --> RAW[("data/raw/dataset.csv<br/>54 000 rows × 26 cols")]
+    RAW --> FE["② features.py<br/>lags · rolling stats · deltas<br/>temporal 70/15/15 split · scaler"]
+    FE --> PROC[("data/processed/<br/>train · val · test · meta.json")]
+    PROC --> TR["③ models.py<br/>LR · RF · XGBoost · LSTM · GRU · Stacking"]
+    TR --> MOD[("models/*.pkl · *.pt")]
+    MOD --> EV["④ evaluate.py<br/>P · R · F1 · ROC-AUC"]
+    MOD --> EX["⑤ explain.py<br/>SHAP"]
+    EV --> REP[("reports/")]
+    EX --> REP
 
-**Network topology:**
-- 4 base stations at symmetric grid positions — (250,250), (750,250), (250,750), (750,750) m
-- 15 UEs: 8 pedestrians (0.5–2 m/s) + 7 vehicles (8–20 m/s)
-- Carrier: 2 GHz, TX power: 46 dBm, bandwidth: 10 MHz (noise floor −107 dBm)
+    TR -. "params · val F1" .-> MLF[("MLflow<br/>mlflow.db")]
+    EV -. "test metrics · plots" .-> MLF
+    MLF --> PRO["promote_best_model.py<br/>max 0.6·F1 + 0.4·AUC"]
+    PRO --> CH[("models/champion/")]
+    CH --> PRED["predict.py<br/>CLI scoring"]
+    CH --> DASH["app/dashboard.py<br/>Streamlit · 8 tabs"]
 
-**Radio model** (`src/radio_model.py`) — 3GPP TR 36.873 UMa:
-- **LOS/NLOS** state per link, sampled from distance-dependent probability `P(LOS|d) = min(18/d,1)·(1−e^{−d/63}) + e^{−d/63}`
-- **Path loss** — separate LOS (`22·log10(d)+28+20·log10(fc)`) and NLOS formulas
-- **Shadow fading** — Gudmundson AR(1), σ_LOS=4 dB / σ_NLOS=6 dB, decorr=100 m
-- **Fast fading** — AR(1) complex Gaussian (Rayleigh NLOS / Rician K=5 dB LOS), 1 s averaged
-- **SINR** — load-weighted: `S / (Σ P_nb × (0.10 + 0.90 × cell_load) + N)`
-- **L3 filter** — EMA α=0.5 applied to raw RSRP before HO logic (models 3GPP measurement averaging)
+    classDef store fill:#f1f5f9,stroke:#94a3b8,color:#1f2933
+    classDef stage fill:#eff6ff,stroke:#3b82f6,color:#1f2933
+    classDef serve fill:#ecfdf5,stroke:#10b981,color:#1f2933
+    class RAW,PROC,MOD,REP,MLF,CH store
+    class FE,TR,EV,EX,PRO stage
+    class PRED,DASH serve
+```
 
-**Mobility model** (`src/mobility.py`) — Random Waypoint with direction persistence:
-- Pedestrians: short waypoints (200 m radius), high heading noise, pauses on arrival
-- Vehicles: full-grid waypoints, smooth heading blend (80% toward target), no pauses
-- Elastic boundary reflection
+`run_pipeline.py` is the single entry point for phases 2–5. `dvc.yaml` mirrors the same stages so they can be reproduced and cached, and that is what CI runs.
 
-**Handover logic** (`src/handover_logic.py`):
-- **A3/A4/A5 event classification** on L3-filtered RSRP
-- **Velocity-aware TTT** — `TTT = max(1, 3 − floor(speed/7))` steps
-- **Multi-factor HO failure** — weighted combination of SINR sigmoid (50%), speed (15%), target RSRP (15%), sustained low RSRP (20%); ~20% overall failure rate
-- **Ping-pong hysteresis** — +3 dB extra margin on the reverse cell pair for 20 steps after a ping-pong
+---
 
-#### Label lookahead note {#label-lookahead-note}
+## 1 · Network simulation
 
-`handover_soon` looks **3 steps ahead** (3 s at 1 s/step).  This is a deliberate tradeoff:
-- **Shorter horizon (1–2 s)** — higher achievable precision (less noise), but the prediction arrives too late for the network to pre-configure the target cell.
-- **3-step horizon** — gives the scheduler ~3 s of preparation time, which is sufficient for standard X2-based handover signalling.
-- **Longer horizon (5–10 s)** — more operationally useful but label noise increases sharply because mobility is unpredictable over many seconds, making the positive class harder to separate and reducing max achievable precision.
+`simulate.py` assembles three modules from `src/` into a 1 km² urban macro-cell network. It runs at 1 s per step for 3,600 steps.
 
-**Dataset columns:**
+### Topology and mobility
+
+![Network map](docs/img/network_map.png)
+
+- **4 eNBs** on a 500 m grid, 46 dBm, 2 GHz carrier, 10 MHz bandwidth (noise floor −107 dBm).
+- **15 UEs** moving under a Random Waypoint model with direction persistence:
+  - **Pedestrians** (0.5–2 m/s): short 200 m excursions, noisy heading, pauses at waypoints.
+  - **Vehicles** (8–20 m/s): waypoints anywhere on the grid, smooth heading, no pauses.
+  - Elastic reflection at the grid boundary.
+
+Shadow fading means handovers do not only happen on the geometric cell borders. UE 2 above is a pedestrian walking at 1.35 m/s that makes 20 handover attempts in 10 minutes, 9 of them ping-pongs, without leaving a 200 m × 200 m patch. That is exactly the kind of behaviour a predictor has to cope with.
+
+### Radio model (`src/radio_model.py`): 3GPP TR 36.873 UMa
+
+![Radio model](docs/img/radio_model.png)
+
+| Component | Model |
+|---|---|
+| LOS / NLOS state | Sampled per link from `P(LOS\|d) = min(18/d,1)·(1−e^(−d/63)) + e^(−d/63)`, re-evaluated every 5 s |
+| Path loss | LOS `22·log10(d) + 28 + 20·log10(fc)`; NLOS `max(PL_LOS, 19.55 + 39.09·log10(d))` |
+| Shadow fading | Gudmundson AR(1), σ = 4 dB (LOS) / 6 dB (NLOS), 100 m decorrelation |
+| Fast fading | AR(1) complex Gaussian: Rayleigh (NLOS) / Rician K = 5 dB (LOS), 1 s averaged |
+| SINR | Load-weighted interference `S / (Σ P_nb · (0.10 + 0.90·load) + N)` |
+| CQI | 15-level SINR → CQI table (TS 36.213) |
+| L3 filter | EMA α = 0.5 on RSRP, which is what the handover logic sees |
+
+### Handover logic (`src/handover_logic.py`)
+
+```mermaid
+flowchart TD
+    A(["every 1 s step · per UE"]) --> R{{"UE in RLF<br/>recovery?"}}
+    R -- yes --> SKIP["no HO possible<br/>rlf_flag = 1"]
+    R -- no --> N["best neighbour = max L3 RSRP<br/>margin = 3 dB (+3 dB after a ping-pong)"]
+    N --> C{{"neighbour &gt;<br/>serving + margin?"}}
+    C -- no --> RESET["reset TTT counter"]
+    C -- yes --> CNT["TTT counter += 1<br/>(restart if candidate changed)<br/>TTT(v) = max(1, 3 − ⌊v / 7⌋)"]
+    CNT --> T{{"counter ≥<br/>TTT(v)?"}}
+    T -- no --> WAIT["keep measuring"]
+    T -- yes --> CL["classify trigger A5 → A4 → A3<br/>p_fail = f(SINR, speed,<br/>target RSRP, time at low RSRP)"]
+    CL --> F{{"rand &lt;<br/>p_fail?"}}
+    F -- yes --> RLF["HO failure<br/>RLF for 3 steps"]
+    F -- no --> OK["HO success<br/>switch serving cell"]
+    OK --> PP{{"reverses a HO<br/>within 10 s?"}}
+    PP -- yes --> HY["ping-pong<br/>+3 dB margin on reverse<br/>pair for 20 steps"]
+    PP -- no --> DONE(["handover_soon = 1<br/>on the 3 preceding rows"])
+    HY --> DONE
+
+    classDef bad fill:#fef2f2,stroke:#ef4444,color:#1f2933
+    classDef good fill:#ecfdf5,stroke:#10b981,color:#1f2933
+    class RLF,SKIP bad
+    class OK,DONE good
+```
+
+| Event | Condition on L3-filtered RSRP | Meaning |
+|---|---|---|
+| **A5** | serving < −68 dBm **and** neighbour > −60 dBm | coverage emergency |
+| **A4** | neighbour > −55 dBm | strong target |
+| **A3** | neighbour > serving + margin | relative (default) |
+
+**Velocity-aware time-to-trigger.** Faster UEs get a shorter TTT, `max(1, 3 − ⌊v/7⌋)` steps, so a vehicle at 15 m/s triggers after 1 s and a pedestrian after 3 s.
+
+**Handover failure** is a weighted mix of four factors, capped at 0.75. Overall about 21 % of attempts fail and send the UE into radio-link failure (RLF) for 3 s:
+
+![Failure model](docs/img/failure_model.png)
+
+### The dataset
+
+![Dataset overview](docs/img/dataset_overview.png)
+
+The simulation emits 26 columns per UE per second. The gap between serving and neighbour RSRP (right panel) is the single most informative raw signal. Positives cluster where the neighbour is already close to or stronger than the serving cell, but the two distributions overlap heavily. That overlap is why temporal features matter.
+
+<details>
+<summary><b>All 26 dataset columns</b></summary>
 
 | Column | Description |
 |--------|-------------|
 | `timestamp` | Simulation step (s) |
-| `ue_id` | UE identifier (0–14) |
-| `serving_cell_id` | Current serving BS (0–3) |
-| `rsrp_serving` | Instantaneous RSRP from serving BS (dBm) |
-| `rsrq_serving` | RSRQ from serving BS (dB) |
-| `sinr` | SINR computed from L3-filtered RSRP (dB) |
+| `ue_id` | UE identifier (0–14; 0–7 pedestrians, 8–14 vehicles) |
+| `serving_cell_id` | Current serving eNB (0–3) |
+| `rsrp_serving` | Instantaneous RSRP from serving eNB (dBm) |
+| `rsrq_serving` | RSRQ from serving eNB (dB) |
+| `sinr` | Serving-cell SINR (dB) |
 | `cqi` | Channel Quality Indicator (1–15) |
-| `best_neighbor_cell_id` | Strongest neighbour BS |
+| `best_neighbor_cell_id` | Strongest neighbour eNB |
 | `rsrp_neighbor` | Instantaneous RSRP from best neighbour (dBm) |
 | `rsrq_neighbor` | RSRQ from best neighbour (dB) |
-| `rsrp_diff` | `rsrp_serving − rsrp_neighbor` (dB) |
-| `l3_rsrp_serving` | L3-filtered serving RSRP — what HO logic sees (dBm) |
+| `rsrp_diff` | `rsrp_serving − rsrp_neighbor` (dB); negative means the neighbour is stronger |
+| `l3_rsrp_serving` | L3-filtered serving RSRP, the value the HO logic uses (dBm) |
 | `l3_rsrp_neighbor` | L3-filtered neighbour RSRP (dBm) |
 | `ue_speed` | UE speed (m/s) |
-| `pos_x`, `pos_y` | UE position (m) — **simulation-only ground truth**, not available in real LTE deployments; excluded from engineered features |
-| `los_flag` | 1 if serving link is currently LOS — **simulation-only ground truth**, not observable in real networks; excluded from engineered features |
-| `serving_cell_load` | UEs on serving cell |
-| `cell_load_pct` | Serving cell load as percentage (0–100) |
-| `handover_event` | 1 if HO attempt made this step |
-| `target_cell_id` | Target BS (−1 if no HO) |
-| `event_type` | A3 / A4 / A5 / none |
-| `handover_failure` | 1 if HO attempt failed (→ RLF) |
+| `pos_x`, `pos_y` | UE position (m), simulation ground truth |
+| `los_flag` | 1 if the serving link is LOS, simulation ground truth |
+| `serving_cell_load` | UEs attached to the serving cell |
+| `cell_load_pct` | Serving-cell load (0–100 %) |
+| `handover_event` | 1 if a HO attempt was made this step |
+| `target_cell_id` | Target eNB (−1 if no HO) |
+| `event_type` | `A3` / `A4` / `A5` / `none` |
+| `handover_failure` | 1 if the attempt failed (→ RLF) |
 | `ping_pong` | 1 if this HO reversed a recent one |
-| `rlf_flag` | 1 if UE is in RLF recovery this step |
-| `handover_soon` | **Label** — successful HO within next 3 steps |
+| `rlf_flag` | 1 if the UE is in RLF recovery |
+| `handover_soon` | **Label**: a *successful* HO occurs within the next 3 steps |
 
-### Phase 2 — Feature Engineering (`src/features.py`)
+</details>
 
-From 26 raw columns → **86 engineered features**:
+### Why a 3-second look-ahead?
 
-| Type | Examples |
-|------|---------|
-| Lag (t−1, t−2, t−3) | `rsrp_serving_lag1`, `sinr_lag3` |
-| Rolling mean (3 s, 5 s) | `rsrp_serving_roll5_mean` |
-| Rolling std | `sinr_roll3_std` |
-| Delta (1 s, 3 s) | `rsrp_serving_delta3` |
-| Domain | `rsrp_diff` = neighbour − serving |
+- **1–2 s:** easier to predict, but too late for the network to prepare the target cell.
+- **3 s:** enough time for standard X2-based handover preparation. This is the chosen trade-off.
+- **5–10 s:** more useful operationally, but mobility over that horizon is close to random, so label noise rises sharply and the achievable precision drops.
 
-Temporal 70/15/15 split · StandardScaler fit on train only · no future leakage.
+---
 
-### Phase 3 — Modeling (`src/models.py`)
+## 2 · Feature engineering
 
-Six models are trained in sequence. Each run is logged to MLflow automatically (see [MLflow](#mlflow-experiment-tracking)).
+`src/features.py` turns 26 raw columns into **86 model features**, computed independently per UE:
+
+```mermaid
+flowchart LR
+    S["8 radio signals<br/>RSRP · RSRQ serving & neighbour<br/>L3 RSRP serving & neighbour<br/>SINR · CQI"]
+    S --> L["lags<br/>t−1 · t−2 · t−3<br/><b>24</b>"]
+    S --> M["rolling mean<br/>3 s · 5 s (shifted)<br/><b>16</b>"]
+    S --> D["rolling std<br/>3 s · 5 s (shifted)<br/><b>16</b>"]
+    S --> DL["deltas<br/>1 s · 3 s<br/><b>16</b>"]
+    S --> RAWF["current value<br/><b>8</b>"]
+    CTX["context<br/>ue_speed · rsrp_diff · cell_load_pct<br/>pos_x · pos_y · los_flag<br/><b>6</b>"]
+    L & M & D & DL & RAWF & CTX --> F["<b>86 features</b><br/>StandardScaler fit on train only"]
+    classDef out fill:#eff6ff,stroke:#3b82f6,color:#1f2933
+    class F out
+```
+
+**Leakage guards**
+
+- Lags and deltas look backwards only. Rolling windows are **shifted by one step**, so they never include the current row.
+- The first 3 rows of each UE (incomplete history) are dropped.
+- The split is **by timestamp, never shuffled**. The scaler is fit on the training block only.
+
+![Temporal split](docs/img/temporal_split.png)
+
+---
+
+## 3 · Models
 
 | Model | Key settings |
 |-------|-------------|
-| Logistic Regression | C=0.5, saga solver, class_weight balanced |
-| Random Forest | 300 trees, max_depth=12, class_weight balanced |
-| XGBoost | n_estimators=400, max_depth=6, lr=0.05, early stopping (20 rounds) |
-| LSTM | 2 layers × 64 hidden, seq_len=10, WeightedRandomSampler |
-| GRU | 2 layers × 64 hidden, seq_len=10 — lighter recurrent alternative to LSTM |
-| Stacking Ensemble | meta-LR trained on val-set probs from XGBoost + RF + LSTM |
+| Logistic Regression | `C=0.5`, saga solver, `class_weight='balanced'` |
+| Random Forest | 300 trees, `max_depth=12`, `class_weight='balanced'` |
+| XGBoost | 400 trees, `max_depth=6`, `lr=0.05`, early stopping (20 rounds) on validation |
+| LSTM | 2 layers × 64 hidden → FC 32 → 1, 10-step window, `WeightedRandomSampler` |
+| GRU | Same as LSTM with GRU cells, a lighter recurrent alternative |
+| Stacking Ensemble | Meta logistic regression over XGBoost + RF + LSTM probabilities |
 
-**Stacking details:** the meta-learner receives three probability columns (one per base model) aligned to the same row subset. LSTM/GRU drop the first `SEQ_LEN−1` rows per UE (no full look-back window); `_build_seq_row_indices()` reconstructs those rows so the sklearn models cover the exact same subset when building meta-features.
+```mermaid
+flowchart LR
+    X["features at step t<br/>(86)"] --> XGB["XGBoost<br/>400 trees · depth 6"]
+    X --> RF["Random Forest<br/>300 trees · depth 12"]
+    SEQ["window t−9 … t<br/>(10 × 86)"] --> LSTM["LSTM 2 × 64<br/>→ FC 32 → 1"]
+    XGB --> P1["p_xgb"]
+    RF --> P2["p_rf"]
+    LSTM --> P3["p_lstm"]
+    P1 & P2 & P3 --> META["meta Logistic Regression<br/>fit on validation-set probabilities"]
+    META --> OUT(["P(handover_soon)"])
+    NOTE["rows without a full 10-step history are dropped<br/>for every base model, so all three see the same rows"] -.- META
+    classDef out fill:#ecfdf5,stroke:#10b981,color:#1f2933
+    classDef note fill:#fffbeb,stroke:#f59e0b,color:#1f2933
+    class OUT out
+    class NOTE note
+```
 
-### Phase 4 — Evaluation (`src/evaluate.py`)
+**Stacking alignment.** The recurrent models cannot score the first `SEQ_LEN − 1` rows of each UE. `_build_seq_row_indices()` rebuilds that exact row subset so the tree models produce meta-features for the same rows. The same alignment is used in training, evaluation and notebook 10.
+
+---
+
+## 4 · Results
+
+![Model comparison](docs/img/model_comparison.png)
 
 | Model | Precision | Recall | F1 | ROC-AUC | Score† |
 |-------|-----------|--------|----|---------|--------|
-| Logistic Regression | 0.352 | 0.869 | 0.501 | 0.898 | 0.660 |
+| Logistic Regression | 0.352 | **0.869** | 0.501 | 0.898 | 0.660 |
 | Random Forest | 0.433 | 0.736 | 0.545 | 0.911 | 0.691 |
-| **XGBoost** ★ | 0.426 | 0.778 | **0.550** | 0.919 | 0.698 |
+| **XGBoost** ★ | 0.426 | 0.778 | **0.550** | **0.919** | **0.698** |
 | LSTM | 0.342 | 0.781 | 0.476 | 0.881 | 0.638 |
 | GRU | 0.332 | 0.809 | 0.471 | 0.865 | 0.628 |
 | Stacking Ensemble | **0.561** | 0.403 | 0.469 | **0.919** | 0.649 |
 
-† Score = 0.6 × F1 + 0.4 × AUC — the champion promotion criterion.
+<sub>† Score = 0.6 × F1 + 0.4 × AUC, the champion promotion criterion. All metrics are on the held-out last 15 % of simulated time, at a 0.5 threshold.</sub>
 
-**Reproducibility:** Logistic Regression, Random Forest and XGBoost reproduce these figures exactly (fixed `random_state=42` throughout), so the champion is stable. LSTM, GRU and Stacking are not seeded — `src/models.py` calls no `torch.manual_seed`, and the `WeightedRandomSampler` draws from the unseeded global RNG — so those three rows shift by roughly ±0.015 F1 between runs. This table and the ROC/confusion-matrix figures below come from the same run.
+<table>
+<tr>
+<td><img src="docs/img/roc_curves.png" alt="ROC curves"></td>
+<td><img src="docs/img/confusion_matrices.png" alt="Confusion matrices"></td>
+</tr>
+</table>
 
-★ **XGBoost** is the current **champion** by weighted score (0.698).  It achieves the best F1 of all six models, meaning it balances recall (catching imminent handovers) against false alarms more effectively than any other model.
+**Reading the results**
 
-**Stacking Ensemble footnote:** The ensemble's low F1 (0.469) does not disqualify it — its AUC of 0.919 shows excellent discriminative ability at all thresholds, and its precision of 0.561 is the highest of any model.  However, at the default 0.5 threshold its recall (0.403) is too low to be operationally safe: nearly 60 % of imminent handovers go unpredicted, which would cause connectivity drops.  Lowering the threshold to 0.25–0.30 substantially recovers recall at the cost of more false alarms.  The weighted score criterion reflects this by penalising low F1, so the Stacking Ensemble is not promoted despite its high AUC.
-
-**XGBoost** maximises F1. **XGBoost** and **Stacking** are effectively tied on AUC (0.9188 vs 0.9190). **LSTM/GRU** capture raw temporal RSRP trajectories without manual feature engineering.
-
-### Phase 5 — SHAP Explanation (`src/explain.py`)
-
-Computes SHAP values for four models and saves twelve plots to `reports/shap/`:
-
-| Model | Explainer | Why this one |
-|-------|-----------|--------------|
-| Logistic Regression | `LinearExplainer` | Exact, analytical — instant |
-| Random Forest | `TreeExplainer` | Exact tree-path SHAP — fast |
-| XGBoost | `TreeExplainer` | Exact tree-path SHAP — fast |
-| Stacking Ensemble | `KernelExplainer` | Model-agnostic; features are the 3 base-model output probabilities — shows which base model drives each prediction |
-
-Three plot types per model:
-
-| Plot | File | What it shows |
-|------|------|---------------|
-| Bar chart | `shap_bar_<model>.png` | Top-20 features ranked by mean \|SHAP\| |
-| Beeswarm | `shap_summary_<model>.png` | Per-sample SHAP distribution, coloured by feature value |
-| Waterfall | `shap_waterfall_<model>.png` | Single positive prediction decomposed feature-by-feature |
-
-LSTM and GRU are excluded (DeepExplainer would take minutes and produce noisier values than TreeExplainer).
-
-SHAP plots are also logged as artifacts into each model's MLflow run under the `shap/` sub-directory.
-
-### Phase 6 — Dashboard (`app/dashboard.py`)
-
-Interactive Streamlit app with eight tabs:
-
-| Tab | Content |
-|-----|---------|
-| 📊 Radio KPIs | RSRP, SINR, RSRQ, CQI charts with handover markers |
-| 🔁 HO Timeline | Scatter of handover events by UE and target cell |
-| ⚠️ Risk | Per-UE risk heatmap + gauge for the selected model |
-| 🔮 Live Prediction | Upload a CSV (or type values manually) to score new measurements with the champion model in real time |
-| 📋 Model Comparison | Metrics table parsed from `reports/evaluation.txt` |
-| 🔍 SHAP Explanations | Bar / beeswarm / waterfall plots; on-demand recompute button |
-| 🧪 MLflow Runs | Live query of `mlflow.db` — val F1, test AUC, status |
-| 🗺️ Mobility Map | UE position tracks + base station markers |
-
-A **champion model banner** at the top reads `models/champion/metadata.json` and displays the promoted model name, AUC, and promotion timestamp.
+- **XGBoost wins on F1** and ties the Stacking Ensemble on AUC (0.9188 vs 0.9190), so it is the champion.
+- **The Stacking Ensemble ranks well but is badly calibrated at 0.5.** It has the highest precision (0.561), but at the default threshold it misses about 60 % of imminent handovers. Lowering the threshold to 0.25–0.30 recovers most of the recall. The weighted score penalises it for low F1 at 0.5.
+- **The recurrent models do not beat the trees here.** The engineered lag and rolling features already give the tree models the temporal context the LSTM/GRU would otherwise learn.
+- **Reproducibility.** LR, RF and XGBoost use `random_state=42` and reproduce exactly. LSTM, GRU and Stacking are not seeded (no `torch.manual_seed`, unseeded sampler), so their rows move by about ±0.015 F1 between runs.
 
 ---
 
-## Inference — `predict.py`
+## 5 · Explainability (SHAP)
 
-Score new UE measurements against the champion model without running the full pipeline:
+`src/explain.py` explains four models and writes 12 plots to `reports/shap/` (bar, beeswarm and waterfall for each). The plots are also logged to each model's MLflow run.
 
-```bash
-# Show current champion info
-python predict.py --info
+| Model | Explainer | Why |
+|---|---|---|
+| Logistic Regression | `LinearExplainer` | Exact and analytical |
+| Random Forest, XGBoost | `TreeExplainer` | Exact tree-path SHAP, fast |
+| Stacking Ensemble | `KernelExplainer` | Model-agnostic over the 3 base-model probabilities, showing which base model drives each prediction |
 
-# Score a CSV file (one row per timestep)
-python predict.py --csv path/to/measurements.csv
+LSTM and GRU are left out: `DeepExplainer` is slow and noisier than tree SHAP.
 
-# Score a single row as JSON
-python predict.py --json '{"rsrp_serving": -85, "sinr": 12, ...}'
+For the tree models, the most important features are **deltas and rolling statistics of the serving/neighbour RSRP gap**. What signals an imminent handover is how fast the gap is closing, not its current value. Notebook 09 goes further with dependency plots and per-UE temporal SHAP.
 
-# Custom decision threshold
-python predict.py --csv measurements.csv --threshold 0.35
+---
+
+<a id="mlops"></a>
+
+## MLOps: DVC, MLflow, CI and champion promotion
+
+```mermaid
+flowchart LR
+    PUSH["push / PR → main"] --> GA["GitHub Actions<br/>Python 3.11"]
+    GA --> REPRO["dvc repro"]
+    subgraph DVC["DVC pipeline · dvc.yaml"]
+        direction LR
+        s1[simulate] --> s2[features] --> s3[train] --> s4[evaluate]
+        s3 --> s5[explain]
+    end
+    REPRO --> DVC
+    s4 --> PRO["promote_best_model.py"]
+    PRO --> ART[("artifacts<br/>reports · champion metadata")]
+    CACHE[("cached DVC run-cache<br/>keyed on source hashes")] -. "skips unchanged stages" .-> DVC
 ```
 
-**Example output:**
+**DVC.** `dvc.yaml` declares five stages with explicit dependencies and outputs. `dvc repro` reruns only the stages whose inputs changed, and `dvc dag` prints the graph.
+
+**MLflow (optional).** Every training run logs hyperparameters, validation F1 and the model artifact. Evaluation then *resumes the same run*, using `models/mlflow_run_ids.json`, to append test metrics and plots. The store is a local SQLite file (`mlflow.db`, gitignored), so no server is needed and the full MLflow UI works:
+
+```bash
+mlflow ui --backend-store-uri sqlite:///mlflow.db     # http://localhost:5000
+```
+
+All MLflow calls are wrapped in `try/except`, so the pipeline runs fine without MLflow installed.
+
+**Champion promotion.** `scripts/promote_best_model.py` picks the run with the highest **0.6 × F1 + 0.4 × AUC**, copies its artifact to `models/champion/` and writes `metadata.json`. If MLflow is unavailable, it falls back to parsing `reports/evaluation.txt`.
+
+*Why weight F1 above AUC?* A missed handover can mean a dropped connection and RLF recovery. A false alarm only triggers a preparation phase that the network can abort cheaply. Pure AUC can crown a model that ranks well but misses most real handovers at its operating threshold, which is exactly what happens with the Stacking Ensemble above.
+
+**CI** (`.github/workflows/ci.yml`) runs on every push and PR to `main`. It installs dependencies, restores the DVC run-cache, runs `dvc repro`, promotes the champion, and uploads `reports/` plus the champion metadata as 30-day artifacts. There is no separate unit-test suite: the end-to-end pipeline run is the integration test.
+
+<details>
+<summary><b>Querying runs from Python</b></summary>
+
+```python
+import mlflow
+
+mlflow.set_tracking_uri("sqlite:///mlflow.db")
+client = mlflow.tracking.MlflowClient()
+exp = client.get_experiment_by_name("lte_handover_prediction")
+
+for r in client.search_runs([exp.experiment_id], order_by=["metrics.test_roc_auc DESC"]):
+    name = r.data.tags.get("mlflow.runName")
+    print(f"{name:<25} AUC={r.data.metrics.get('test_roc_auc'):.4f}  F1={r.data.metrics.get('test_f1'):.4f}")
+```
+
+</details>
+
+---
+
+<a id="serving"></a>
+
+## Serving: dashboard and CLI
+
+### Streamlit dashboard (`app/dashboard.py`)
+
+```bash
+streamlit run app/dashboard.py
+```
+
+| Tab | What it shows |
+|-----|---------|
+| 📊 Radio KPIs | RSRP, SINR, RSRQ and CQI over time with handover markers |
+| 🔁 HO Timeline | Handover events by UE and target cell |
+| ⚠️ Risk | Per-UE risk heatmap and a gauge for the selected model |
+| 🔮 Live Prediction | Upload a raw-measurement CSV (or type values) and score it with the champion; features are engineered on the fly |
+| 📋 Model Comparison | Metrics parsed from `reports/evaluation.txt` |
+| 🔍 SHAP Explanations | Bar / beeswarm / waterfall plots, with an on-demand recompute |
+| 🧪 MLflow Runs | Live query of `mlflow.db` |
+| 🗺️ Mobility Map | UE tracks and eNB positions |
+
+A champion banner at the top reads `models/champion/metadata.json`.
+
+**Test data for Live Prediction.** `generate_test_dataset.py` simulates fresh CSVs from four scenario presets. Pre-generated samples are in `data/test_scenarios/`:
+
+| Scenario | Description | HO-soon rate |
+|---|---|---|
+| `default` | Mixed pedestrians and vehicles | 12.5 % |
+| `vehicle` | Fast vehicles only (8–20 m/s) | 15.1 % |
+| `stable` | Slow pedestrians near eNBs | 5.0 % |
+| `cell_edge` | UEs seeded along cell boundaries | 15.0 % |
+
+```bash
+python generate_test_dataset.py --scenario vehicle --ues 8 --steps 500
+```
+
+### CLI (`predict.py`)
+
+```bash
+python predict.py --info                              # champion name, AUC, promotion time
+python predict.py --csv features.csv                  # score a CSV
+python predict.py --csv features.csv --threshold 0.35 # custom operating point
+python predict.py --json '{"rsrp_serving": -85, ...}' # score one row
+```
 
 ```
 Model: xgboost  |  AUC=0.9188
@@ -321,251 +440,96 @@ Model: xgboost  |  AUC=0.9188
 ───────────────────────────────────────────
      3   0.7821  ⚠  HANDOVER
      3   0.0431  ✓  ok
-     7   0.1204  ✓  ok
 ```
 
-The script handles all model types automatically:
-- **sklearn models** (LR, RF, XGBoost) — direct `predict_proba`
-- **PyTorch models** (LSTM, GRU) — sliding window sequences with padding
-- **Stacking Ensemble** — transparently loads base models and composes meta-features
+The CLI handles sklearn, PyTorch and stacking champions transparently.
 
-Input CSVs only need the raw signal columns; any missing engineered features (lags, rolling stats, deltas) are filled with zero so the script works with minimal inputs.
+> **Note:** `predict.py` currently expects the engineered columns (lags, rolling stats, deltas) to be in the input, and skips rows where more than 10 % of them are missing. To score raw measurements such as `data/test_scenarios/*.csv`, use the dashboard's Live Prediction tab, which engineers features itself.
 
 ---
 
-## Test Dataset Generation
+## Limitations and next steps
 
-`generate_test_dataset.py` produces ready-to-use CSVs that can be uploaded directly to the **🔮 Live Prediction** tab of the Streamlit dashboard (or passed to `predict.py --csv`).
-
-Four built-in scenario presets cover different deployment conditions:
-
-| Scenario | Description | Approx. HO rate |
-|----------|-------------|----------------|
-| `default` | Mixed pedestrians + vehicles, typical placement | ~12 % |
-| `vehicle` | All fast vehicles (8–20 m/s), high mobility stress | ~15 % |
-| `stable` | Slow pedestrians clustered near BSs, low interference | ~5 % |
-| `cell_edge` | UEs seeded along cell boundaries — worst-case RSRP | ~15 % |
-
-```bash
-# Default run — default scenario, 5 UEs, 300 steps, seed 42
-python generate_test_dataset.py
-
-# Vehicle scenario
-python generate_test_dataset.py --scenario vehicle --ues 8 --steps 500
-
-# Cell-edge scenario with custom output path
-python generate_test_dataset.py --scenario cell_edge --ues 6 --steps 400 --output my_test.csv
-
-# Stable scenario for sanity checks
-python generate_test_dataset.py --scenario stable --ues 3 --steps 200
-```
-
-Four pre-generated sample files are committed to `data/test_scenarios/` for immediate use without running the script:
-
-```
-data/test_scenarios/
-├── default_ues5_steps300_seed42.csv     # 1500 rows, 12.5 % HO rate
-├── vehicle_ues4_steps200_seed42.csv     # 800 rows,  15.1 % HO rate
-├── stable_ues3_steps200_seed42.csv      # 600 rows,   5.0 % HO rate
-└── cell_edge_ues5_steps200_seed42.csv   # 1000 rows, 15.0 % HO rate
-```
-
-Each output CSV contains all raw signal columns expected by `predict.py` and the dashboard, plus a `handover_soon` ground-truth column so you can evaluate prediction accuracy after scoring.
+- **Synthetic data.** Every number here comes from a simulator. The radio models follow 3GPP, but real drive-test or OSS traces would be the real test.
+- **Simulation-only inputs.** `pos_x`, `pos_y` and `los_flag` are in the feature set. A real network does not observe them directly, so a deployable model should drop them and be retrained.
+- **RSRP range.** About 20 % of rows have serving RSRP above −44 dBm, the top of the 3GPP reporting range (the simulator clamps at −25 dBm). Real UEs would report these as −44, so a model trained on real data would see a saturated signal near the eNBs.
+- **Unseeded deep models.** LSTM/GRU/Stacking results vary by about ±0.015 F1 between runs. Seeding PyTorch and the sampler would make the whole table reproducible.
+- **Threshold tuning.** All results use a 0.5 threshold. Picking an operating point per model on the validation set (notebook 10 has the sweep) would change the ranking, most of all for the Stacking Ensemble.
 
 ---
 
 ## Notebooks
 
-All 10 notebooks have pre-computed outputs and require the `lte_venv` (or project `.venv`) kernel to re-execute.
+All 10 notebooks are committed with outputs. Re-executing them needs the project environment (`lte_venv` kernel or `.venv`).
 
-| Notebook | Content |
-|----------|---------|
-| 01 | Data generation walkthrough |
-| 02 | Feature engineering deep-dive |
-| 03 | Model training step-by-step |
-| 04 | Evaluation + ROC/confusion visualisation |
-| 05 | Dashboard preview |
-| 06 | Simulation realism analysis (v3 radio model) |
-| 07 | Side-by-side model impact comparison |
-| **08** | **MLflow experiment tracking** — run comparison, radar chart, champion spotlight |
-| **09** | **SHAP explanations** — beeswarm, dependency plots, waterfall, temporal SHAP per UE |
-| **10** | **Model comparison deep-dive** — PR curves, calibration, threshold sweep, speed benchmark, error analysis |
-
-To re-execute any notebook:
+| # | Notebook | Content |
+|---|---|---|
+| 01 | Data generation | Simulator walkthrough |
+| 02 | Feature engineering | Lag / rolling / delta deep-dive |
+| 03 | Modeling | Training step by step |
+| 04 | Evaluation | ROC and confusion matrices |
+| 05 | Dashboard preview | Static preview of the app |
+| 06 | Simulation realism | v3 radio-model analysis |
+| 07 | Model impact | Side-by-side comparison |
+| 08 | MLflow tracking | Run comparison, radar chart, champion spotlight |
+| 09 | SHAP explanations | Beeswarm, dependence, waterfall, temporal SHAP per UE |
+| 10 | Model comparison | PR curves, calibration, threshold sweep, speed benchmark, error analysis |
 
 ```bash
 jupyter nbconvert --to notebook --execute --inplace \
-  --ExecutePreprocessor.timeout=300 \
-  --ExecutePreprocessor.kernel_name=lte_venv \
+  --ExecutePreprocessor.timeout=300 --ExecutePreprocessor.kernel_name=lte_venv \
   notebooks/<notebook>.ipynb
 ```
 
 ---
 
-## MLflow Experiment Tracking
+## Repository structure
 
-MLflow is an **optional** dependency — the pipeline runs normally without it. When installed, every training run is automatically logged.
-
-MLflow uses a **local SQLite database** by default — no server required, and all UI tabs (including the Overview tab) work correctly:
-
-```
-mlflow.db            ← created automatically on first run (gitignored)
-```
-
-> **Why not `mlruns/`?** MLflow's file-based backend does not support the Overview tab or several comparison features. SQLite is the recommended single-machine alternative and requires zero extra setup.
-
-### What gets logged
-
-| Phase | What is logged |
-|-------|---------------|
-| Training (phase 3) | Hyperparameters, validation F1 score, serialised model artifact |
-| Evaluation (phase 4) | Test precision, recall, F1, ROC-AUC; `roc_curves.png` and `confusion_matrices.png` as artifacts |
-
-Run IDs are saved to `models/mlflow_run_ids.json` during training so that the evaluation phase can **resume the same run** and append test metrics rather than create a second run per model.
-
-### Viewing runs in the browser
-
-```bash
-# From the project root — opens http://localhost:5000
-mlflow ui --backend-store-uri sqlite:///mlflow.db
-```
-
-Then navigate to the **lte_handover_prediction** experiment to compare runs side-by-side, inspect logged parameters, and download plot artifacts.
-
-Alternatively, view runs directly in the **Streamlit dashboard** under the 🧪 MLflow Runs tab (no separate server needed).
-
-### Querying runs from Python
-
-```python
-import mlflow
-
-mlflow.set_tracking_uri("sqlite:///mlflow.db")
-client = mlflow.tracking.MlflowClient()
-
-exp = client.get_experiment_by_name("lte_handover_prediction")
-runs = client.search_runs(
-    experiment_ids=[exp.experiment_id],
-    order_by=["metrics.test_roc_auc DESC"],
-)
-
-for r in runs:
-    name = r.data.tags.get("mlflow.runName")
-    auc  = r.data.metrics.get("test_roc_auc")
-    f1   = r.data.metrics.get("test_f1")
-    print(f"{name:<25} AUC={auc:.4f}  F1={f1:.4f}")
-```
-
----
-
-## Champion Model & Model Promotion
-
-After evaluation, `scripts/promote_best_model.py` selects the run with the highest **weighted score (0.6 × F1 + 0.4 × AUC)** and copies its artifact to `models/champion/`.
-
-**Why F1 is weighted higher than AUC:**  
-In LTE handover prediction, a missed handover (false negative) causes an immediate connectivity drop and potential Radio Link Failure, which requires recovery signalling and degrades user experience.  A false alarm (false positive) merely triggers a preparation phase that the network aborts within milliseconds — a much lower cost.  F1 penalises false negatives more directly than AUC, so it is weighted at 60 % to reflect this cost asymmetry.  Pure AUC optimisation can crown a model that achieves high discriminative ability but sets its decision boundary so conservatively that it misses most real handovers at the default threshold.
-
-```bash
-python scripts/promote_best_model.py
-```
+<details>
+<summary><b>Show tree</b></summary>
 
 ```
-models/champion/
-├── xgboost.pkl             # copy of the winning model
-└── metadata.json           # { model_name, run_id, test_roc_auc, test_f1, promoted_at }
+├── simulate.py                  # Phase 1: LTE network simulation → data/raw/dataset.csv
+├── run_pipeline.py              # Phases 2–5 runner (--phase N for one phase)
+├── predict.py                   # CLI inference with the champion model
+├── generate_test_dataset.py     # Scenario CSVs for live prediction
+├── dvc.yaml / dvc.lock          # 5-stage reproducible pipeline
+├── requirements.txt             # Pinned dependencies (Python 3.11)
+│
+├── src/
+│   ├── radio_model.py           # Path loss, fading, SINR, RSRQ, CQI
+│   ├── mobility.py              # Random Waypoint mobility + UE state
+│   ├── handover_logic.py        # A3/A4/A5, TTT, failure, ping-pong
+│   ├── features.py              # Phase 2: features, temporal split, scaler
+│   ├── models.py                # Phase 3: 6 models + MLflow logging
+│   ├── evaluate.py              # Phase 4: metrics, ROC, confusion matrices
+│   └── explain.py               # Phase 5: SHAP
+│
+├── scripts/
+│   ├── promote_best_model.py    # Champion selection → models/champion/
+│   └── make_figures.py          # Regenerates the README figures in docs/img/
+│
+├── app/dashboard.py             # Streamlit dashboard (8 tabs)
+├── notebooks/                   # 01–10, committed with outputs
+├── docs/                        # Architecture notes, technical report, figures
+├── data/
+│   ├── raw/                     # dataset.csv (DVC-tracked, gitignored)
+│   ├── processed/               # train/val/test + meta.json (DVC-tracked)
+│   └── test_scenarios/          # Sample CSVs for the dashboard
+├── models/champion/metadata.json
+└── .github/workflows/ci.yml     # dvc repro + promotion on every push
 ```
 
-The dashboard reads `metadata.json` on startup and displays the champion banner. If MLflow is not available, the script falls back to parsing `reports/evaluation.txt`.
+Generated artifacts (`data/raw/dataset.csv`, `data/processed/*.csv`, `models/*.pkl|*.pt`, `reports/`, `mlflow.db`) are gitignored and rebuilt by the pipeline.
 
----
+</details>
 
-## DVC Pipeline
+**Regenerating the figures:** `python scripts/make_figures.py` rebuilds every figure in `docs/img/` from the simulator. It needs only numpy, pandas and matplotlib, and simulates the dataset if it is missing. `roc_curves.png` and `confusion_matrices.png` come from the evaluation phase (`reports/`).
 
-[DVC](https://dvc.org) tracks data and model artifacts and defines five pipeline stages in `dvc.yaml`:
-
-| Stage | Command | Inputs | Outputs |
-|-------|---------|--------|---------|
-| `simulate` | `python simulate.py` | `src/radio_model.py`, `src/mobility.py`, `src/handover_logic.py` | `data/raw/dataset.csv` |
-| `features` | `python run_pipeline.py --phase 2` | `src/features.py`, `data/raw/dataset.csv` | `data/processed/`, `models/scaler.pkl` |
-| `train` | `python run_pipeline.py --phase 3` | `src/models.py`, `data/processed/` | `models/*.pkl`, `models/*.pt` |
-| `evaluate` | `python run_pipeline.py --phase 4` | `src/evaluate.py`, `data/processed/test.csv`, `models/` | `reports/evaluation.txt`, `reports/*.png` |
-| `explain` | `python run_pipeline.py --phase 5` | `src/explain.py`, `data/processed/test.csv`, `models/` | `reports/shap/` |
-
-Reproduce the full pipeline:
-
-```bash
-pip install dvc
-dvc repro
-```
-
-DVC detects which stages are stale (inputs changed) and only re-runs those. Run `dvc dag` to visualise the dependency graph.
-
----
-
-## SHAP Explanation
-
-[SHAP](https://shap.readthedocs.io) assigns each feature a contribution score for every prediction, grounded in cooperative game theory. Three explainer types are used depending on the model:
-
-| Explainer | Models | Speed |
-|-----------|--------|-------|
-| `TreeExplainer` | XGBoost, Random Forest | Fast — exact tree-path computation |
-| `LinearExplainer` | Logistic Regression | Instant — analytical solution |
-
-Plots are saved to `reports/shap/` — twelve files total (three per model):
-
-```
-reports/shap/
-├── shap_bar_logistic_regression.png
-├── shap_bar_random_forest.png
-├── shap_bar_xgboost.png
-├── shap_bar_stacking_ensemble.png
-├── shap_summary_logistic_regression.png
-├── shap_summary_random_forest.png
-├── shap_summary_xgboost.png
-├── shap_summary_stacking_ensemble.png
-├── shap_waterfall_logistic_regression.png
-├── shap_waterfall_random_forest.png
-├── shap_waterfall_xgboost.png
-└── shap_waterfall_stacking_ensemble.png
-```
-
-**Bar chart** — global importance ranked by mean |SHAP|. The top features across all three models are `rsrp_diff`-related deltas and rolling statistics, confirming that the rate of change in the serving/neighbour RSRP gap is the strongest predictor of an imminent handover.
-
-**Beeswarm** — one dot per test sample, coloured by feature value (red = high, blue = low). A cluster of red dots on the right means *high feature value increases handover risk*.
-
-**Waterfall** — single positive-class prediction decomposed feature-by-feature, starting from the model base value and ending at the final output. Useful for explaining *why* a specific UE was flagged.
-
----
-
-## CI/CD — GitHub Actions
-
-`.github/workflows/ci.yml` runs on every push and pull request to `main`:
-
-1. **Install dependencies** — `pip install -r requirements.txt` (includes `dvc`)
-2. **Restore DVC cache** — `actions/cache` keyed to `dvc.yaml + src/**/*.py + simulate.py + requirements.txt`; unchanged stages are skipped on cache hit
-3. **Reproduce pipeline** — `dvc repro` (all five stages: simulate → features → train → evaluate → explain)
-4. **Promote champion** — `python scripts/promote_best_model.py`
-5. **Upload artifacts** — `reports/` and `models/champion/metadata.json` retained for 30 days
-
----
-
-## Results
-
-![ROC Curves](docs/img/roc_curves.png)
-![Confusion Matrices](docs/img/confusion_matrices.png)
-
----
-
-## Requirements
-
-- Python 3.11 (`.python-version` file included)
-- pandas · numpy · scikit-learn · xgboost · torch · streamlit · plotly · seaborn · joblib · statsmodels · mlflow · dvc · shap
-
-See [`requirements.txt`](requirements.txt) for pinned versions.
-
-> **macOS note:** PyTorch and XGBoost both initialise OpenMP threads. On macOS this can cause a segfault when both are loaded in the same process. The pipeline sets `OMP_NUM_THREADS=1` before importing torch to prevent this — no action needed from the user.
+**macOS note:** PyTorch and XGBoost both start OpenMP threads, which can segfault on macOS when both are loaded in one process. The pipeline sets `OMP_NUM_THREADS=1` before importing torch.
 
 ---
 
 ## Author
 
-**Souhail Bourhim** — LTE network simulation + ML pipeline
+**Souhail Bourhim**: LTE network simulation and ML pipeline.

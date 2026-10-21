@@ -2,22 +2,19 @@
 
 ## System overview
 
+```mermaid
+flowchart LR
+    SIM["simulate.py<br/>radio · mobility · HO logic"] --> RAW[("data/raw/dataset.csv")]
+    RAW --> FE["features.py"] --> PROC[("data/processed/")]
+    PROC --> TR["models.py"] --> MOD[("models/")]
+    MOD --> EV["evaluate.py"] --> MLF[("MLflow · reports/")]
+    MOD --> EX["explain.py"] --> MLF
+    MLF --> PRO["promote_best_model.py"] --> CH[("models/champion/")]
+    CH --> PRED["predict.py"]
+    CH --> DASH["app/dashboard.py"]
 ```
-simulate.py  ──►  run_pipeline.py (phases 2–5)  ──►  app/dashboard.py
-                       │                                    │
-              ┌────────┴─────────┐                 🔮 Live Prediction tab
-        src/features.py     src/models.py          (generate_test_dataset.py
-              │                  │                  or predict.py --csv)
-        data/processed/    models/*.pkl / *.pt
-              │                  │
-        src/evaluate.py ◄────────┘
-              │
-        reports/ + MLflow (mlflow.db)
-              │
-        src/explain.py  ──►  reports/shap/
-              │
-        scripts/promote_best_model.py  ──►  models/champion/
-```
+
+A more detailed diagram, plus the handover state machine, feature and stacking diagrams, is in the [README](../README.md#system-architecture).
 
 ## Module responsibilities
 
@@ -47,8 +44,8 @@ simulate.py  ──►  run_pipeline.py (phases 2–5)  ──►  app/dashboard
 | `mlflow.db` | SQLite MLflow tracking store — experiment runs, metrics, hyperparams, artifact paths |
 | `dvc.yaml` | Five-stage reproducible pipeline: simulate → features → train → evaluate → explain |
 | `.github/workflows/ci.yml` | GitHub Actions — runs `dvc repro` end-to-end on every push to `main` |
-| `scripts/promote_best_model.py` | Queries MLflow for highest `test_roc_auc`, copies winner to `models/champion/` |
-| `predict.py` | CLI inference entry point — loads champion model, handles sklearn/PyTorch/stacking; also powers the dashboard Live Prediction tab |
+| `scripts/promote_best_model.py` | Queries MLflow for the highest `0.6 × F1 + 0.4 × AUC`, copies winner to `models/champion/` |
+| `predict.py` | CLI inference entry point — loads champion model, handles sklearn/PyTorch/stacking; expects engineered feature columns in its input (the dashboard Live Prediction tab engineers its own) |
 | `app/dashboard.py` | Eight-tab Streamlit app — KPI charts, HO timeline, risk gauge, 🔮 Live Prediction, model comparison, SHAP, MLflow, mobility map |
 
 ## Key design decisions
