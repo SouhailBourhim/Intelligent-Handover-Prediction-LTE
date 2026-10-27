@@ -460,7 +460,7 @@ with tab_cmp:
         for img in ["roc_curves.png", "pr_curves.png"]:
             path = ROOT / "reports" / img
             if path.exists():
-                st.image(str(path), use_container_width=True)
+                st.image(str(path), use_column_width=True)
     else:
         st.info("Run `python run_pipeline.py` to generate evaluation results.")
 
@@ -509,7 +509,7 @@ with tab_shap:
     img_path = plot_file_map[plot_type]
 
     if img_path.exists():
-        st.image(str(img_path), use_container_width=True)
+        st.image(str(img_path), use_column_width=True)
 
         with st.expander("How to read this plot"):
             if "bar" in plot_type.lower():
@@ -640,7 +640,7 @@ with tab_pho:
         st.caption(cl.get("note", ""))
         img = ROOT / "docs" / "img" / "closed_loop.png"
         if img.exists():
-            st.image(str(img), use_container_width=True)
+            st.image(str(img), use_column_width=True)
     else:
         st.info("Run `python -m src.closed_loop` to produce reports/closed_loop.json.")
 

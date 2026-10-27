@@ -31,7 +31,10 @@ class RadioConfig:
     carrier_freq_ghz: float = 2.0           # LTE Band 7
     tx_power_dbm:     float = 46.0          # eNB total Tx power (10 MHz)
     n_subcarriers:    int   = 600           # 50 PRB × 12 subcarriers (10 MHz)
-    thermal_noise_dbm: float = -107.0       # noise over the 10 MHz bandwidth
+    # kTB over the 9 MHz occupied by 50 PRB (−174 dBm/Hz + 69.5 dB) + 9 dB UE
+    # noise figure ≈ −95.5 dBm.  The network is interference-limited, so SINR
+    # is almost insensitive to this value.
+    thermal_noise_dbm: float = -95.5
 
     # 3GPP TS 36.133 RSRP reporting range
     min_rsrp: float = -140.0

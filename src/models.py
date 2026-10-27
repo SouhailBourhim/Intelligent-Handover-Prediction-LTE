@@ -43,6 +43,7 @@ from sklearn.model_selection import KFold, cross_val_predict
 from xgboost import XGBClassifier
 
 # ── MLflow (optional) ──────────────────────────────────────────────────────────
+os.environ.setdefault("MLFLOW_DISABLE_AGENT_HINT", "1")   # MLflow 3 prints a banner on import
 try:
     import mlflow
     import mlflow.sklearn
@@ -108,6 +109,20 @@ def _mlf_save_run_id(name: str, run_id: str):
             json.dump(data, f, indent=2)
     except Exception:
         pass
+
+
+def _mlf_log_sklearn(model):
+    """
+    Log a scikit-learn-API model as the run's artifact.
+
+    MLflow 3 serialises with skops by default and rejects tree objects
+    (sklearn Tree, XGBoost Booster) as untrusted; cloudpickle is the format
+    joblib already uses for models/*.pkl.  MLflow 2.x has neither argument.
+    """
+    try:
+        mlflow.sklearn.log_model(model, name="model", serialization_format="cloudpickle")
+    except TypeError:
+        mlflow.sklearn.log_model(model, "model")
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -379,8 +394,9 @@ def _train_sequence_model(
     weights = np.where(labels_arr == 1, n_neg / max(n_pos, 1), 1.0)
     # The WeightedRandomSampler balances mini-batches (≈ 50 % positives), the
     # PyTorch counterpart of class_weight.  The loss is NOT re-weighted on top:
-    # doing both would weight positives (n_neg/n_pos)² ≈ 150× and push every
-    # probability up (v3 LSTM/GRU precision ≈ 0.33 came from exactly that).
+    # doing both would weight positives by (n_neg/n_pos)² (≈ 240× at a 6 %
+    # positive rate) and push every probability up — v3's LSTM/GRU precision
+    # of ≈ 0.33 came from exactly that.
     sampler = torch.utils.data.WeightedRandomSampler(
         weights=torch.tensor(weights, dtype=torch.float32),
         num_samples=len(train_ds),
@@ -606,11 +622,11 @@ def run_training():
     try:
         if MLFLOW_AVAILABLE:
             with mlflow.start_run(run_name="logistic_regression") as run:
+                run_id_map["Logistic Regression"] = run.info.run_id
                 mlflow.log_params({"C": 0.5, "solver": "saga",
                                    "class_weight": "balanced"})
                 mlflow.log_metric("val_f1", lr_val_f1)
-                mlflow.sklearn.log_model(lr_model, "model")
-                run_id_map["Logistic Regression"] = run.info.run_id
+                _mlf_log_sklearn(lr_model)
     except Exception:
         pass
 
@@ -624,11 +640,11 @@ def run_training():
     try:
         if MLFLOW_AVAILABLE:
             with mlflow.start_run(run_name="random_forest") as run:
+                run_id_map["Random Forest"] = run.info.run_id
                 mlflow.log_params({"n_estimators": 300, "max_depth": 12,
                                    "min_samples_leaf": 5})
                 mlflow.log_metric("val_f1", rf_val_f1)
-                mlflow.sklearn.log_model(rf_model, "model")
-                run_id_map["Random Forest"] = run.info.run_id
+                _mlf_log_sklearn(rf_model)
     except Exception:
         pass
 
@@ -642,6 +658,7 @@ def run_training():
     try:
         if MLFLOW_AVAILABLE:
             with mlflow.start_run(run_name="xgboost") as run:
+                run_id_map["XGBoost"] = run.info.run_id
                 mlflow.log_params({
                     "n_estimators": 1500, "max_depth": 6,
                     "learning_rate": 0.05, "subsample": 0.8,
@@ -649,8 +666,7 @@ def run_training():
                     "best_iteration": int(xgb_model.best_iteration),
                 })
                 mlflow.log_metric("val_f1", xgb_val_f1)
-                mlflow.sklearn.log_model(xgb_model, "model")
-                run_id_map["XGBoost"] = run.info.run_id
+                _mlf_log_sklearn(xgb_model)
     except Exception:
         pass
 
@@ -664,13 +680,13 @@ def run_training():
     try:
         if MLFLOW_AVAILABLE:
             with mlflow.start_run(run_name="lstm") as run:
+                run_id_map["LSTM"] = run.info.run_id
                 mlflow.log_params({
                     "seq_len": SEQ_LEN, "hidden_size": 64,
                     "num_layers": 2, "dropout": 0.3,
                     "epochs": 30, "batch_size": 256, "lr": 1e-3,
                 })
                 mlflow.log_metric("val_pr_auc_checkpoint", lstm_val_f1)
-                run_id_map["LSTM"] = run.info.run_id
     except Exception:
         pass
 
@@ -682,13 +698,13 @@ def run_training():
     try:
         if MLFLOW_AVAILABLE:
             with mlflow.start_run(run_name="gru") as run:
+                run_id_map["GRU"] = run.info.run_id
                 mlflow.log_params({
                     "seq_len": SEQ_LEN, "hidden_size": 64,
                     "num_layers": 2, "dropout": 0.3,
                     "epochs": 30, "batch_size": 256, "lr": 1e-3,
                 })
                 mlflow.log_metric("val_pr_auc_checkpoint", gru_val_f1)
-                run_id_map["GRU"] = run.info.run_id
     except Exception:
         pass
 
@@ -702,6 +718,7 @@ def run_training():
     try:
         if MLFLOW_AVAILABLE:
             with mlflow.start_run(run_name="stacking_ensemble") as run:
+                run_id_map["Stacking Ensemble"] = run.info.run_id
                 mlflow.log_params({
                     "base_models": "xgboost,random_forest,lstm",
                     "meta_model": "logistic_regression",
@@ -709,8 +726,7 @@ def run_training():
                     "meta_class_weight": "balanced",
                 })
                 mlflow.log_metric("val_f1", stack_val_f1)
-                mlflow.sklearn.log_model(stacking_model, "model")
-                run_id_map["Stacking Ensemble"] = run.info.run_id
+                _mlf_log_sklearn(stacking_model)
     except Exception:
         pass
 
@@ -722,8 +738,8 @@ def run_training():
     try:
         if MLFLOW_AVAILABLE:
             with mlflow.start_run(run_name="rule_a3_gap") as run:
-                mlflow.log_params({"offset_db": rule.offset_db, "scale_db": rule.scale_db})
                 run_id_map["Rule (A3 gap)"] = run.info.run_id
+                mlflow.log_params({"offset_db": rule.offset_db, "scale_db": rule.scale_db})
     except Exception:
         pass
 
