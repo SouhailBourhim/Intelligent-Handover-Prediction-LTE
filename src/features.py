@@ -8,14 +8,18 @@ Pipeline:
   4. Scale numeric features
   5. Save processed dataset — no leakage guaranteed (all shifts are backward-looking)
 
-v3 additions (relative to v2):
-  SIGNAL_COLS now includes l3_rsrp_serving and l3_rsrp_neighbor — the L3-filtered
-  measurements that the handover logic actually uses. Their lags, rolling stats,
-  and deltas give the models visibility into the smoothed channel trajectory.
+SIGNAL_COLS includes l3_rsrp_serving and l3_rsrp_neighbor — the L3-filtered
+measurements the handover logic actually uses.
 
-  SCALE_COLS also picks up cell_load_pct (fractional cell utilisation) and
-  los_flag (0/1 LOS state, z-scored so the model treats it as a soft feature).
+v4: only quantities a real network observes are features.  pos_x, pos_y and
+los_flag stay in the raw dataset for analysis but are not model inputs.
+
+build_features() is the single feature builder used by training, predict.py,
+the dashboard and the generalization study; OnlineFeatureBuffer computes the
+same features one step at a time for the closed-loop simulation.
 """
+
+from collections import deque
 
 import pandas as pd
 import numpy as np
@@ -40,13 +44,18 @@ SIGNAL_COLS = [
     "l3_rsrp_serving", "l3_rsrp_neighbor",   # v3: L3-filtered measurements
 ]
 
+# Per-row context the network observes (no position or LOS ground truth)
+CONTEXT_COLS = [
+    "ue_speed",
+    "rsrp_diff",                  # serving − neighbor gap (raw, from the simulator)
+    "cell_load_pct",              # serving cell load percentage
+]
+
+# Rows of history a UE needs before its lag / delta features exist
+WARMUP_STEPS = max(LAG_STEPS + DELTA_STEPS)
+
 # Features that enter the scaler (constructed after engineering)
-SCALE_COLS = SIGNAL_COLS + [
-    "ue_speed", "pos_x", "pos_y",
-    "rsrp_diff",                  # serving − neighbor gap (raw, from simulate.py)
-    "cell_load_pct",              # v3: serving cell load percentage
-    "los_flag",                   # v3: LOS/NLOS state (0/1, z-scored)
-] + [
+SCALE_COLS = SIGNAL_COLS + CONTEXT_COLS + [
     f"{c}_lag{k}" for c in SIGNAL_COLS for k in LAG_STEPS
 ] + [
     f"{c}_roll{w}_mean" for c in SIGNAL_COLS for w in ROLL_WINDOWS
@@ -61,16 +70,8 @@ SCALE_COLS = SIGNAL_COLS + [
 
 def load_raw(path: Path = RAW_PATH) -> pd.DataFrame:
     df = pd.read_csv(path)
-    required = {
-        "timestamp", "ue_id", "serving_cell_id",
-        "rsrp_serving", "rsrq_serving", "sinr", "cqi",
-        "best_neighbor_cell_id", "rsrp_neighbor", "rsrq_neighbor",
-        "rsrp_diff",
-        "l3_rsrp_serving", "l3_rsrp_neighbor",   # v3
-        "ue_speed", "pos_x", "pos_y",
-        "los_flag", "cell_load_pct",              # v3
-        "handover_event", "target_cell_id", "handover_soon",
-    }
+    required = {"timestamp", "ue_id", *SIGNAL_COLS, *CONTEXT_COLS,
+                "handover_event", "target_cell_id", "handover_soon"}
     missing = required - set(df.columns)
     if missing:
         raise ValueError(f"Missing columns: {missing}")
@@ -79,25 +80,26 @@ def load_raw(path: Path = RAW_PATH) -> pd.DataFrame:
 
 # ── Step 2: Clean ──────────────────────────────────────────────────────────────
 
+def _clip_signals(df: pd.DataFrame) -> pd.DataFrame:
+    """Clip measurements to their 3GPP reporting / physical ranges (in place)."""
+    for col in ["rsrp_serving", "rsrp_neighbor", "l3_rsrp_serving", "l3_rsrp_neighbor"]:
+        df[col] = df[col].clip(-140, -44)
+    df["rsrq_serving"]  = df["rsrq_serving"].clip(-20, -3)
+    df["rsrq_neighbor"] = df["rsrq_neighbor"].clip(-20, -3)
+    df["sinr"]          = df["sinr"].clip(-20, 30)
+    df["cqi"]           = df["cqi"].clip(1, 15).astype(int)
+    df["ue_speed"]      = df["ue_speed"].clip(0, 25)
+    df["cell_load_pct"] = df["cell_load_pct"].clip(0, 100)
+    return df
+
+
 def clean(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df = df.sort_values(["ue_id", "timestamp"]).reset_index(drop=True)
 
     # Drop duplicate (ue_id, timestamp) pairs if any
     df = df.drop_duplicates(subset=["ue_id", "timestamp"])
-
-    # Clip to physically valid ranges
-    df["rsrp_serving"]      = df["rsrp_serving"].clip(-140, -25)
-    df["rsrp_neighbor"]     = df["rsrp_neighbor"].clip(-140, -25)
-    df["l3_rsrp_serving"]   = df["l3_rsrp_serving"].clip(-140, -25)   # v3
-    df["l3_rsrp_neighbor"]  = df["l3_rsrp_neighbor"].clip(-140, -25)  # v3
-    df["rsrq_serving"]      = df["rsrq_serving"].clip(-20, -3)
-    df["rsrq_neighbor"]     = df["rsrq_neighbor"].clip(-20, -3)
-    df["sinr"]              = df["sinr"].clip(-20, 30)
-    df["cqi"]               = df["cqi"].clip(1, 15).astype(int)
-    df["ue_speed"]          = df["ue_speed"].clip(0.5, 25)
-    df["cell_load_pct"]     = df["cell_load_pct"].clip(0, 100)        # v3
-    df["los_flag"]          = df["los_flag"].clip(0, 1).astype(int)   # v3
+    df = _clip_signals(df)
 
     # Fill NaN (none expected, but safety net)
     df[SIGNAL_COLS] = df[SIGNAL_COLS].ffill().bfill()
@@ -132,17 +134,74 @@ def _per_ue(group: pd.DataFrame) -> pd.DataFrame:
     return g
 
 
-def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
-    # Use list-concat to avoid pandas 2.x groupby.apply column-consumption bug
-    max_lag = max(LAG_STEPS + DELTA_STEPS)
-    chunks = []
-    for _, group in df.groupby("ue_id", sort=False):
-        g = _per_ue(group)
-        # Drop first max_lag rows where lag/delta values are NaN
-        g = g.iloc[max_lag:].copy()
-        chunks.append(g)
+def build_features(df_raw: pd.DataFrame, drop_warmup: bool = True) -> pd.DataFrame:
+    """
+    Engineer the model features for any measurement table.
 
-    return pd.concat(chunks, ignore_index=True)
+    Works on raw measurement CSVs in any row order: rows are grouped by UE and
+    ordered by timestamp before lags / rolling stats / deltas are computed.
+    The returned frame **keeps the input index**, so callers attach scores
+    back to their own rows with `.loc[index]`, never by position.
+
+    Each row gets `history_steps` (earlier rows of the same UE).  Rows with
+    fewer than WARMUP_STEPS have undefined lags; they are dropped by default,
+    or kept and marked `warmup=True` when drop_warmup=False.
+    """
+    missing = {"timestamp", "ue_id", *SIGNAL_COLS, *CONTEXT_COLS} - set(df_raw.columns)
+    if missing:
+        raise ValueError(f"Missing measurement columns: {sorted(missing)}")
+
+    df = _clip_signals(df_raw.copy())
+    chunks = []
+    # List-concat avoids the pandas 2.x groupby.apply column-consumption bug
+    for _, group in df.groupby("ue_id", sort=False):
+        g = _per_ue(group.sort_values("timestamp"))
+        g["history_steps"] = np.arange(len(g))
+        chunks.append(g)
+    out = pd.concat(chunks)
+    out["warmup"] = out["history_steps"] < WARMUP_STEPS
+    if drop_warmup:
+        out = out[~out["warmup"]]
+    return out
+
+
+def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Training-time features: build_features without warm-up rows, fresh index."""
+    return build_features(df, drop_warmup=True).reset_index(drop=True)
+
+
+class OnlineFeatureBuffer:
+    """
+    Streaming version of build_features for the closed-loop simulation.
+
+    Keeps the last WINDOW measurements of every UE and computes, for the newest
+    row, exactly the features _per_ue computes offline (a parity test in
+    tests/test_features.py checks this).
+    """
+
+    WINDOW = max(ROLL_WINDOWS + LAG_STEPS + DELTA_STEPS)
+
+    def __init__(self):
+        self.history: dict[int, deque] = {}
+
+    def push(self, rec: dict) -> dict | None:
+        """Add one measurement row; return its features (None during warm-up)."""
+        hist = self.history.setdefault(rec["ue_id"], deque(maxlen=self.WINDOW))
+        feats = None
+        if len(hist) >= WARMUP_STEPS:
+            feats = {c: float(rec[c]) for c in SIGNAL_COLS + CONTEXT_COLS}
+            for c in SIGNAL_COLS:
+                p = np.array([h[c] for h in hist], dtype=float)   # oldest … newest
+                for k in LAG_STEPS:
+                    feats[f"{c}_lag{k}"] = p[-k]
+                for w in ROLL_WINDOWS:
+                    win = p[-w:]
+                    feats[f"{c}_roll{w}_mean"] = win.mean()
+                    feats[f"{c}_roll{w}_std"]  = win.std(ddof=1) if len(win) > 1 else 0.0
+                for d in DELTA_STEPS:
+                    feats[f"{c}_delta{d}"] = float(rec[c]) - p[-d]
+        hist.append({c: float(rec[c]) for c in SIGNAL_COLS})
+        return feats
 
 
 # ── Step 4: Scale ──────────────────────────────────────────────────────────────

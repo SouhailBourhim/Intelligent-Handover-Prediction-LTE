@@ -3,6 +3,9 @@ Phase 5 — Streamlit Dashboard
 
 Features:
   • Champion model banner  (from models/champion/metadata.json)
+  • Live prediction on uploaded raw measurements (src/serving.py — the same
+    feature path as predict.py, results joined back by row index)
+  • Proactive-HO tab: closed-loop experiment and generalization results
   • Network KPI monitor    (RSRP, SINR, RSRQ, CQI per UE over time)
   • Handover event timeline
   • Real-time handover risk gauge
@@ -18,7 +21,6 @@ import sys
 import numpy as np
 import pandas as pd
 import joblib
-import torch
 import plotly.graph_objects as go
 import plotly.express as px
 import streamlit as st
@@ -28,11 +30,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from src.models import (
-    LSTMClassifier, GRUClassifier,
-    SequenceDataset, SEQ_LEN,
-    _build_seq_row_indices,
-)
+from src.serving import load_model, predict_scaled, score_measurements  # noqa: E402
 
 # ── Page config ────────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -53,34 +51,27 @@ def load_data():
     return raw, test, meta
 
 
-@st.cache_resource
-def load_models(feat_cols):
-    models = {}
-    for name, fname in [
-        ("Random Forest",     "random_forest.pkl"),
-        ("Logistic Regression", "logistic_regression.pkl"),
-        ("XGBoost",           "xgboost.pkl"),
-        ("Stacking Ensemble", "stacking_ensemble.pkl"),
-    ]:
-        try:
-            models[name] = joblib.load(ROOT / "models" / fname)
-        except Exception:
-            pass
+MODEL_NAMES = [
+    "XGBoost", "Random Forest", "Logistic Regression",
+    "LSTM", "GRU", "Stacking Ensemble", "Rule (A3 gap)",
+]
 
-    for name, cls, fname in [
-        ("LSTM", LSTMClassifier, "lstm.pt"),
-        ("GRU",  GRUClassifier,  "gru.pt"),
-    ]:
+
+@st.cache_resource
+def load_models():
+    models = {}
+    for name in MODEL_NAMES:
         try:
-            net = cls(input_size=len(feat_cols))
-            net.load_state_dict(
-                torch.load(ROOT / "models" / fname, map_location="cpu")
-            )
-            net.eval()
-            models[name] = net
+            models[name] = load_model(name)
         except Exception:
             pass
     return models
+
+
+@st.cache_data
+def load_report(name: str):
+    path = ROOT / "reports" / name
+    return json.loads(path.read_text()) if path.exists() else None
 
 
 @st.cache_data
@@ -100,189 +91,46 @@ def load_scaler():
 
 # ── Live-prediction helpers ────────────────────────────────────────────────────
 
-# Raw signal columns that are physically meaningful inputs
+# Raw measurement columns a live CSV must provide
 RAW_SIGNAL_COLS = [
     "rsrp_serving", "rsrq_serving", "sinr", "cqi",
     "rsrp_neighbor", "rsrq_neighbor",
     "l3_rsrp_serving", "l3_rsrp_neighbor",
-    "ue_speed", "pos_x", "pos_y", "rsrp_diff",
-    "cell_load_pct", "los_flag",
+    "rsrp_diff", "ue_speed", "cell_load_pct",
 ]
 
-def _engineer_live(df_raw: pd.DataFrame) -> pd.DataFrame:
+
+def score_live(df_input: pd.DataFrame, model) -> pd.DataFrame:
     """
-    Compute temporal features for a small live DataFrame.
-    Works best when the DataFrame contains a time-ordered sequence for one UE.
-    Rows without enough history (< max lag) are kept but NaNs are filled with 0.
+    Score raw measurements and return df_input with risk_pct / warm-up columns.
+
+    score_measurements() groups rows by UE, orders them by timestamp and
+    returns scores on df_input's own index, so any row order is safe.
     """
-    from src.features import SIGNAL_COLS, LAG_STEPS, ROLL_WINDOWS, DELTA_STEPS
-
-    df = df_raw.copy()
-
-    # Ensure required raw columns exist; fill missing ones with sensible defaults
-    defaults = {
-        "rsrp_serving": -90, "rsrq_serving": -12, "sinr": 5, "cqi": 7,
-        "rsrp_neighbor": -95, "rsrq_neighbor": -14,
-        "l3_rsrp_serving": -90, "l3_rsrp_neighbor": -95,
-        "ue_speed": 1.5, "pos_x": 500, "pos_y": 500,
-        "rsrp_diff": 5, "cell_load_pct": 30, "los_flag": 1,
-    }
-    for col, val in defaults.items():
-        if col not in df.columns:
-            df[col] = val
-
-    if "ue_id" not in df.columns:
-        df["ue_id"] = 0
-    if "timestamp" not in df.columns:
-        df["timestamp"] = range(len(df))
-
-    df = df.sort_values(["ue_id", "timestamp"]).reset_index(drop=True)
-
-    # Compute temporal features per UE
-    chunks = []
-    for _, grp in df.groupby("ue_id", sort=False):
-        g = grp.copy()
-        for col in SIGNAL_COLS:
-            if col not in g.columns:
-                continue
-            for k in LAG_STEPS:
-                g[f"{col}_lag{k}"] = g[col].shift(k)
-            for w in ROLL_WINDOWS:
-                g[f"{col}_roll{w}_mean"] = g[col].shift(1).rolling(w, min_periods=1).mean()
-                g[f"{col}_roll{w}_std"]  = g[col].shift(1).rolling(w, min_periods=1).std().fillna(0)
-            for d in DELTA_STEPS:
-                g[f"{col}_delta{d}"] = g[col] - g[col].shift(d)
-        chunks.append(g)
-
-    result = pd.concat(chunks, ignore_index=True)
-    return result.fillna(0)
-
-
-def _scale_live(df: pd.DataFrame, feat_cols: list[str], scaler) -> np.ndarray:
-    """Select feat_cols, zero-fill missing, apply scaler, return float32 array."""
-    for col in feat_cols:
-        if col not in df.columns:
-            df[col] = 0.0
-    X = df[feat_cols].fillna(0).values
-    if scaler is not None:
-        X = scaler.transform(X)
-    return X.astype(np.float32)
-
-
-def _run_live_prediction(
-    df_input: pd.DataFrame,
-    model_name: str,
-    models: dict,
-    feat_cols: list[str],
-    scaler,
-) -> pd.DataFrame:
-    """Score df_input and return a copy with a 'risk_pct' column."""
-    df_eng = _engineer_live(df_input)
-    X      = _scale_live(df_eng, feat_cols, scaler)
-
-    if model_name in {"LSTM", "GRU"}:
-        net   = models[model_name]
-        n     = len(X)
-        pad   = np.repeat(X[:1], SEQ_LEN - 1, axis=0)
-        X_pad = np.vstack([pad, X])
-        probs = []
-        with torch.no_grad():
-            for i in range(n):
-                seq    = torch.tensor(X_pad[i:i + SEQ_LEN], dtype=torch.float32).unsqueeze(0)
-                logit  = net(seq)
-                probs.append(torch.sigmoid(logit).item())
-        probs = np.array(probs)
-
-    elif model_name == "Stacking Ensemble":
-        xgb_m  = models.get("XGBoost")
-        rf_m   = models.get("Random Forest")
-        lstm_m = models.get("LSTM")
-        meta_m = models.get("Stacking Ensemble")
-        if not all([xgb_m, rf_m, lstm_m, meta_m]):
-            st.error("Stacking Ensemble requires XGBoost, Random Forest, and LSTM models.")
-            return df_input.copy()
-        xgb_p  = xgb_m.predict_proba(X)[:, 1]
-        rf_p   = rf_m.predict_proba(X)[:, 1]
-        # LSTM probs with padding
-        n     = len(X)
-        pad   = np.repeat(X[:1], SEQ_LEN - 1, axis=0)
-        X_pad = np.vstack([pad, X])
-        lstm_p = []
-        with torch.no_grad():
-            for i in range(n):
-                seq    = torch.tensor(X_pad[i:i + SEQ_LEN], dtype=torch.float32).unsqueeze(0)
-                logit  = lstm_m(seq)
-                lstm_p.append(torch.sigmoid(logit).item())
-        meta_X = np.column_stack([xgb_p, rf_p, np.array(lstm_p)]).astype(np.float32)
-        probs  = meta_m.predict_proba(meta_X)[:, 1]
-
-    else:
-        probs = models[model_name].predict_proba(X)[:, 1]
-
-    out = df_input.copy().reset_index(drop=True)
-    out["risk_pct"] = (probs * 100).round(1)
+    scores = score_measurements(df_input, model)
+    out = df_input.join(scores)
+    out["risk_pct"] = (out["prob"] * 100).round(1)
     return out
-
-
-# ── Prediction helpers ─────────────────────────────────────────────────────────
-
-def predict_proba_sklearn(model, X: np.ndarray) -> np.ndarray:
-    return model.predict_proba(X)[:, 1]
-
-
-def predict_proba_seq(net: torch.nn.Module,
-                      df: pd.DataFrame,
-                      feat_cols: list[str]) -> tuple[np.ndarray, list[int]]:
-    """Return (probs, aligned_row_indices)."""
-    ds = SequenceDataset(df, feat_cols, seq_len=SEQ_LEN)
-    if len(ds) == 0:
-        return np.array([]), []
-    loader = torch.utils.data.DataLoader(ds, batch_size=512, shuffle=False)
-    probs = []
-    with torch.no_grad():
-        for xb, _ in loader:
-            probs.extend(torch.sigmoid(net(xb)).numpy())
-    row_indices = _build_seq_row_indices(df, seq_len=SEQ_LEN)
-    return np.array(probs), row_indices
-
-
-def predict_stacking(meta_model,
-                     df: pd.DataFrame,
-                     feat_cols: list[str],
-                     xgb_model, rf_model,
-                     lstm_model: torch.nn.Module) -> tuple[np.ndarray, list[int]]:
-    """Use LSTM probs as anchor row set; stack XGB + RF + LSTM."""
-    lstm_probs, row_indices = predict_proba_seq(lstm_model, df, feat_cols)
-    if len(lstm_probs) == 0:
-        return np.array([]), []
-    sub   = df.loc[row_indices].copy()
-    X_sub = sub[feat_cols].fillna(0).values
-    xgb_p = xgb_model.predict_proba(X_sub)[:, 1]
-    rf_p  = rf_model.predict_proba(X_sub)[:, 1]
-    meta_X = np.column_stack([xgb_p, rf_p, lstm_probs])
-    probs  = meta_model.predict_proba(meta_X)[:, 1]
-    return probs, row_indices
 
 
 # ── Bootstrap ──────────────────────────────────────────────────────────────────
 
 raw, test, meta = load_data()
 feat_cols = [c for c in meta["feature_cols"] if c in test.columns]
-models    = load_models(feat_cols)
+models    = load_models()
 champion  = load_champion_meta()
 scaler    = load_scaler()
 
 # ── Champion banner ────────────────────────────────────────────────────────────
 
 if champion:
-    _f1    = champion.get("test_f1",      0) or 0
-    _auc   = champion.get("test_roc_auc", 0) or 0
-    _score = champion.get("champion_score") or round(0.6 * _f1 + 0.4 * _auc, 4)
-    _crit  = champion.get("promotion_criterion", "0.6*F1 + 0.4*AUC")
+    _test = (f"Test F1: {champion['test_f1']:.4f}  |  Test AUC: {champion['test_roc_auc']:.4f}  |  "
+             if champion.get("test_f1") is not None else "")
     st.success(
-        f"🏆 **Champion model:** {champion.get('model_name', '?')}  |  "
-        f"Score ({_crit}): {_score:.4f}  |  "
-        f"F1: {_f1:.4f}  |  AUC: {_auc:.4f}  |  "
+        f"🏆 **Champion model:** {champion.get('display_name', champion.get('model_name', '?'))}  |  "
+        f"chosen on validation ({champion.get('promotion_criterion', '')}) = "
+        f"{champion.get('champion_score', 0):.4f}  |  {_test}"
+        f"Threshold: {champion.get('threshold', 0.5):.2f}  |  "
         f"Promoted: {str(champion.get('promoted_at',''))[:19].replace('T',' ')} UTC"
     )
 
@@ -291,15 +139,12 @@ if champion:
 st.sidebar.title("📡 LTE Handover Prediction")
 st.sidebar.markdown("---")
 
-_sklearn_seq_names = [
-    "Random Forest", "Logistic Regression", "XGBoost",
-    "LSTM", "GRU", "Stacking Ensemble",
-]
-available_models = [m for m in _sklearn_seq_names if m in models]
-if not available_models:
-    available_models = ["No models found"]
-
-selected_model = st.sidebar.selectbox("Active prediction model", options=available_models)
+available_models = [m for m in MODEL_NAMES if m in models] or ["No models found"]
+_default = (champion or {}).get("display_name")
+selected_model = st.sidebar.selectbox(
+    "Active prediction model", options=available_models,
+    index=available_models.index(_default) if _default in available_models else 0,
+)
 
 all_ues = sorted(raw["ue_id"].unique())
 selected_ues = st.sidebar.multiselect(
@@ -313,7 +158,11 @@ time_range = st.sidebar.slider(
     value=(t_min, t_min + 500), step=10,
 )
 
-prob_threshold = st.sidebar.slider("Risk threshold", 0.1, 0.9, 0.5, 0.05)
+_tuned = models[selected_model].threshold if selected_model in models else 0.5
+prob_threshold = st.sidebar.slider(
+    "Risk threshold", 0.05, 0.95, float(round(_tuned, 2)), 0.01,
+    help="Defaults to the threshold tuned on validation for the selected model.",
+)
 
 # ── Filter data ────────────────────────────────────────────────────────────────
 
@@ -334,9 +183,11 @@ st.markdown("---")
 
 # ── Tabs ───────────────────────────────────────────────────────────────────────
 
-tab_kpi, tab_ho, tab_risk, tab_pred, tab_cmp, tab_shap, tab_mlf, tab_map = st.tabs(
+(tab_kpi, tab_ho, tab_risk, tab_pred, tab_cmp, tab_shap, tab_mlf, tab_map,
+ tab_pho) = st.tabs(
     ["📊 Radio KPIs", "🔁 HO Timeline", "⚠️ Risk", "🔮 Live Prediction",
-     "📋 Model Comparison", "🔍 SHAP Explanations", "🧪 MLflow Runs", "🗺️ Mobility Map"]
+     "📋 Model Comparison", "🔍 SHAP Explanations", "🧪 MLflow Runs", "🗺️ Mobility Map",
+     "🛰️ Proactive HO"]
 )
 
 # ── Tab 1: KPI Charts ──────────────────────────────────────────────────────────
@@ -403,56 +254,25 @@ with tab_ho:
 with tab_risk:
     st.subheader(f"Handover Risk Prediction — {selected_model}")
 
-    if models and selected_model in models and selected_model != "No models found":
-        model  = models[selected_model]
+    if models and selected_model in models:
+        test_ues = test[test["ue_id"].isin(selected_ues)].copy()
         risk_val = 0.0
-
-        _SEQ_MODELS    = {"LSTM", "GRU"}
-        _STACK_MODEL   = "Stacking Ensemble"
-
-        test_ues = test[test["ue_id"].isin(selected_ues)]
-
-        if selected_model in _SEQ_MODELS:
-            probs, row_idx = predict_proba_seq(model, test_ues, feat_cols)
-            if len(probs) > 0:
-                risk_val = float(probs.mean())
-            st.info(f"{selected_model} risk uses test-set sequences for selected UEs.")
-
-        elif selected_model == _STACK_MODEL:
-            xgb_m  = models.get("XGBoost")
-            rf_m   = models.get("Random Forest")
-            lstm_m = models.get("LSTM")
-            if xgb_m and rf_m and lstm_m:
-                probs, row_idx = predict_stacking(
-                    model, test_ues, feat_cols, xgb_m, rf_m, lstm_m
-                )
-                if len(probs) > 0:
-                    risk_val = float(probs.mean())
-            else:
-                st.warning("XGBoost, Random Forest, or LSTM model not loaded.")
-
-        else:
-            test_view = test_ues.copy()
-            X = test_view[feat_cols].fillna(0).values
-            if len(X) > 0:
-                probs    = predict_proba_sklearn(model, X)
-                risk_val = float(probs.mean())
-                test_view = test_view.copy()
-                test_view["risk"] = probs
-
-                pivot = test_view.pivot_table(
-                    index="ue_id", columns="timestamp",
-                    values="risk", aggfunc="mean"
-                )
-                cols_show = pivot.columns[::5]
-                fig_heat = px.imshow(
-                    pivot[cols_show],
-                    color_continuous_scale="RdYlGn_r", zmin=0, zmax=1,
-                    labels=dict(x="Timestamp", y="UE ID", color="Risk"),
-                    title=f"Handover Risk Heatmap — {selected_model}",
-                    aspect="auto", height=300,
-                )
-                st.plotly_chart(fig_heat, use_container_width=True)
+        if len(test_ues):
+            # Test rows are already scaled; predict_scaled builds per-UE
+            # sequences for LSTM / GRU / Stacking and returns probabilities
+            # on test_ues' own index.
+            test_ues["risk"] = predict_scaled(models[selected_model], test_ues, feat_cols)
+            risk_val = float(test_ues["risk"].mean())
+            pivot = test_ues.pivot_table(index="ue_id", columns="timestamp",
+                                         values="risk", aggfunc="mean")
+            fig_heat = px.imshow(
+                pivot[pivot.columns[::5]],
+                color_continuous_scale="RdYlGn_r", zmin=0, zmax=1,
+                labels=dict(x="Timestamp", y="UE ID", color="Risk"),
+                title=f"Handover Risk Heatmap — {selected_model} (test period)",
+                aspect="auto", height=300,
+            )
+            st.plotly_chart(fig_heat, use_container_width=True)
 
         fig_gauge = go.Figure(go.Indicator(
             mode="gauge+number+delta",
@@ -484,301 +304,163 @@ with tab_risk:
 with tab_pred:
     st.subheader("🔮 Live Prediction")
     st.markdown(
-        "Score new UE measurements with the **active model** selected in the sidebar.  \n"
-        "Choose between uploading a CSV file or entering values manually."
+        "Score raw UE measurements with the **active model** selected in the sidebar.  \n"
+        "Lags, rolling statistics and deltas are engineered per UE from the uploaded "
+        "rows (same code path as `predict.py`). The first 3 rows of each UE are "
+        "*warm-up* rows: they have no history yet and are not scored."
     )
 
     if not models or selected_model not in models:
         st.warning("No models loaded. Run `python run_pipeline.py` first.")
     else:
-        input_mode = st.radio(
-            "Input method",
-            ["📂 Upload CSV", "🎛️ Manual input"],
-            horizontal=True,
-            key="pred_input_mode",
-        )
+        model = models[selected_model]
+        input_mode = st.radio("Input method", ["📂 Upload CSV", "🎛️ Manual input"],
+                              horizontal=True, key="pred_input_mode")
 
-        # ── CSV Upload ─────────────────────────────────────────────────────────
         if input_mode == "📂 Upload CSV":
             st.markdown(
-                "**Upload a CSV** with one row per timestep.  \n"
-                "Required columns (minimum): `rsrp_serving`, `rsrq_serving`, `sinr`, `cqi`, "
-                "`rsrp_neighbor`, `rsrq_neighbor`.  \n"
-                "Optional but recommended: `ue_id`, `timestamp`, `l3_rsrp_serving`, "
-                "`l3_rsrp_neighbor`, `ue_speed`, `pos_x`, `pos_y`, `rsrp_diff`, "
-                "`cell_load_pct`, `los_flag`.  \n"
-                "Temporal features (lags, rolling stats, deltas) are computed automatically "
-                "from the uploaded sequence — include as many timesteps as possible for best accuracy."
+                "**Required columns:** " + ", ".join(f"`{c}`" for c in RAW_SIGNAL_COLS) +
+                ", plus `ue_id` and `timestamp` for multi-UE files.  \n"
+                "Ready-made files: `data/test_scenarios/*.csv` (any row order works)."
             )
+            sample = ROOT / "data" / "test_scenarios" / "default_ues5_steps300_seed42.csv"
+            if sample.exists():
+                st.download_button("⬇️ Download a sample measurement file",
+                                   data=sample.read_bytes(), file_name=sample.name,
+                                   mime="text/csv")
 
-            # Sample CSV download
-            sample_cols = ["ue_id", "timestamp"] + RAW_SIGNAL_COLS
-            sample_rows = []
-            for t in range(15):
-                sample_rows.append({
-                    "ue_id": 0, "timestamp": t,
-                    "rsrp_serving":   round(-85 - t * 0.5, 1),
-                    "rsrq_serving":   round(-12 - t * 0.1, 1),
-                    "sinr":           round(8 - t * 0.3, 1),
-                    "cqi":            max(1, 9 - t // 3),
-                    "rsrp_neighbor":  round(-90 + t * 0.8, 1),
-                    "rsrq_neighbor":  round(-14 + t * 0.1, 1),
-                    "l3_rsrp_serving":  round(-85 - t * 0.4, 1),
-                    "l3_rsrp_neighbor": round(-90 + t * 0.6, 1),
-                    "ue_speed": 14.0, "pos_x": 400, "pos_y": 300,
-                    "rsrp_diff": round(-85 - t * 0.5 - (-90 + t * 0.8), 1),
-                    "cell_load_pct": 30, "los_flag": 1,
-                })
-            sample_df = pd.DataFrame(sample_rows)
-            st.download_button(
-                "⬇️ Download sample CSV template",
-                data=sample_df.to_csv(index=False),
-                file_name="lte_measurements_sample.csv",
-                mime="text/csv",
-            )
-
-            uploaded = st.file_uploader(
-                "Upload measurements CSV", type=["csv"], key="pred_upload"
-            )
-
+            uploaded = st.file_uploader("Upload measurements CSV", type=["csv"],
+                                        key="pred_upload")
             if uploaded is not None:
                 try:
                     df_up = pd.read_csv(uploaded)
                     st.markdown(f"**Loaded:** {len(df_up)} rows × {len(df_up.columns)} columns")
-
-                    with st.expander("Preview (first 5 rows)"):
-                        st.dataframe(df_up.head(), use_container_width=True)
-
-                    # Warn if core signal columns are missing
-                    core = ["rsrp_serving", "rsrq_serving", "sinr", "cqi",
-                            "rsrp_neighbor", "rsrq_neighbor"]
-                    missing_core = [c for c in core if c not in df_up.columns]
-                    if missing_core:
-                        st.error(f"Missing required columns: {missing_core}")
+                    missing = [c for c in RAW_SIGNAL_COLS if c not in df_up.columns]
+                    if missing:
+                        st.error(f"Missing required columns: {missing}")
                     else:
                         with st.spinner(f"Running {selected_model}…"):
-                            result_df = _run_live_prediction(
-                                df_up, selected_model, models, feat_cols, scaler
-                            )
-
-                        threshold_pct = prob_threshold * 100
-                        result_df["decision"] = result_df["risk_pct"].apply(
-                            lambda p: "⚠️ HANDOVER" if p >= threshold_pct else "✓ ok"
-                        )
-
-                        n_ho   = (result_df["risk_pct"] >= threshold_pct).sum()
-                        n_ok   = len(result_df) - n_ho
-                        avg_r  = result_df["risk_pct"].mean()
+                            res = score_live(df_up, model)
+                        thr_pct = prob_threshold * 100
+                        scored  = res[~res["warmup"]]
+                        res["decision"] = np.where(
+                            res["warmup"], "warm-up",
+                            np.where(res["risk_pct"] >= thr_pct, "⚠️ HANDOVER", "✓ ok"))
 
                         m1, m2, m3, m4 = st.columns(4)
-                        m1.metric("Rows scored",          len(result_df))
-                        m2.metric("⚠️ HO predicted",      int(n_ho))
-                        m3.metric("✓ Safe",               int(n_ok))
-                        m4.metric("Avg risk",             f"{avg_r:.1f}%")
+                        m1.metric("Rows scored", len(scored))
+                        m2.metric("Warm-up rows", int(res["warmup"].sum()))
+                        m3.metric("⚠️ HO predicted", int((scored["risk_pct"] >= thr_pct).sum()))
+                        m4.metric("Avg risk", f"{scored['risk_pct'].mean():.1f}%")
 
-                        # Results table
-                        show_cols = (
-                            ["ue_id", "timestamp"] if "timestamp" in result_df.columns
-                            else []
-                        ) + core + ["risk_pct", "decision"]
-                        show_cols = [c for c in show_cols if c in result_df.columns]
+                        show = [c for c in ["ue_id", "timestamp", "rsrp_serving",
+                                            "rsrp_neighbor", "sinr", "risk_pct", "decision",
+                                            "handover_soon"] if c in res.columns]
+                        st.dataframe(res[show], use_container_width=True, height=300)
 
-                        st.dataframe(
-                            result_df[show_cols].style.background_gradient(
-                                subset=["risk_pct"],
-                                cmap="RdYlGn_r", vmin=0, vmax=100,
-                            ),
-                            use_container_width=True,
-                            height=300,
-                        )
-
-                        # Risk timeline chart
-                        if "timestamp" in result_df.columns:
+                        if "timestamp" in res.columns:
                             fig_line = go.Figure()
-                            ue_groups = (
-                                result_df.groupby("ue_id")
-                                if "ue_id" in result_df.columns
-                                else [(0, result_df)]
-                            )
-                            for ue_id, grp in ue_groups:
+                            for ue_id, grp in scored.sort_values("timestamp").groupby(
+                                    "ue_id" if "ue_id" in scored else lambda _: 0):
                                 fig_line.add_trace(go.Scatter(
                                     x=grp["timestamp"], y=grp["risk_pct"],
-                                    mode="lines+markers", name=f"UE {ue_id}",
-                                    line=dict(width=2),
-                                ))
-                            fig_line.add_hline(
-                                y=threshold_pct,
-                                line_dash="dash", line_color="red",
-                                annotation_text=f"Threshold ({threshold_pct:.0f}%)",
-                                annotation_position="top left",
-                            )
+                                    mode="lines", name=f"UE {ue_id}"))
+                            fig_line.add_hline(y=thr_pct, line_dash="dash", line_color="red",
+                                               annotation_text=f"Threshold ({thr_pct:.0f}%)")
                             fig_line.update_layout(
                                 title=f"Handover Risk Over Time — {selected_model}",
-                                xaxis_title="Timestamp (s)",
-                                yaxis_title="Risk (%)",
-                                yaxis=dict(range=[0, 105]),
-                                height=350,
-                                legend=dict(orientation="h", y=-0.2),
-                                margin=dict(t=40),
-                            )
+                                xaxis_title="Timestamp (s)", yaxis_title="Risk (%)",
+                                yaxis=dict(range=[0, 105]), height=350,
+                                legend=dict(orientation="h", y=-0.2), margin=dict(t=40))
                             st.plotly_chart(fig_line, use_container_width=True)
 
-                        # Download results
-                        csv_out = result_df[show_cols].to_csv(index=False)
-                        st.download_button(
-                            "⬇️ Download predictions CSV",
-                            data=csv_out,
-                            file_name="handover_predictions.csv",
-                            mime="text/csv",
-                        )
-
+                        st.download_button("⬇️ Download predictions CSV",
+                                           data=res[show].to_csv(index=False),
+                                           file_name="handover_predictions.csv",
+                                           mime="text/csv")
                 except Exception as e:
                     st.error(f"Error processing file: {e}")
 
-        # ── Manual input ───────────────────────────────────────────────────────
         else:
             st.markdown(
-                "Enter the current radio measurements for a single UE.  \n"
-                "Temporal features (lags, rolling stats) are approximated from the values you enter — "
-                "upload a CSV for more accurate results."
+                "Enter the current measurements of one UE. The values are repeated "
+                "for N consecutive seconds to give the model a (flat) history; "
+                "upload a CSV to use a real trajectory."
             )
-
             with st.form("manual_pred_form"):
-                st.markdown("#### Signal measurements")
                 c1, c2, c3 = st.columns(3)
-
                 with c1:
-                    rsrp_s  = st.slider("RSRP Serving (dBm)",   -140, -44,  -88)
-                    rsrq_s  = st.slider("RSRQ Serving (dB)",      -20,  -3,  -12)
-                    sinr    = st.slider("SINR (dB)",              -20,  30,    6)
-                    cqi     = st.slider("CQI",                      1,  15,    7)
-
+                    rsrp_s = st.slider("RSRP Serving (dBm)", -140, -44, -100)
+                    rsrq_s = st.slider("RSRQ Serving (dB)", -20, -3, -12)
+                    sinr   = st.slider("SINR (dB)", -20, 30, 3)
+                    cqi    = st.slider("CQI", 1, 15, 6)
                 with c2:
-                    rsrp_n  = st.slider("RSRP Neighbour (dBm)", -140, -44,  -92)
-                    rsrq_n  = st.slider("RSRQ Neighbour (dB)",   -20,  -3,  -14)
-                    l3_s    = st.slider("L3 RSRP Serving (dBm)",-140, -44,  -88)
-                    l3_n    = st.slider("L3 RSRP Neighbour (dBm)",-140,-44, -92)
-
+                    rsrp_n = st.slider("RSRP Neighbour (dBm)", -140, -44, -101)
+                    rsrq_n = st.slider("RSRQ Neighbour (dB)", -20, -3, -13)
+                    l3_s   = st.slider("L3 RSRP Serving (dBm)", -140, -44, -100)
+                    l3_n   = st.slider("L3 RSRP Neighbour (dBm)", -140, -44, -100)
                 with c3:
-                    speed   = st.slider("UE Speed (m/s)",        0.5,  25.0, 2.0, step=0.5)
-                    load    = st.slider("Cell Load (%)",            0,  100,   30)
-                    los     = st.selectbox("LOS state",           [1, 0],
-                                           format_func=lambda x: "LOS" if x else "NLOS")
-                    n_rows  = st.number_input(
-                        "Simulate N consecutive identical steps (improves lag accuracy)",
-                        min_value=1, max_value=20, value=10,
-                    )
-
+                    speed  = st.slider("UE Speed (m/s)", 0.0, 25.0, 12.0, step=0.5)
+                    load   = st.slider("Cell Load (%)", 0, 100, 30)
+                    n_rows = st.number_input("Consecutive identical steps", 4, 20, 10)
                 submitted = st.form_submit_button("🔮 Predict", type="primary")
 
             if submitted:
-                # Build a short sequence of n_rows identical measurements
-                row = {
-                    "ue_id": 0,
-                    "rsrp_serving":    rsrp_s,
-                    "rsrq_serving":    rsrq_s,
-                    "sinr":            sinr,
-                    "cqi":             cqi,
-                    "rsrp_neighbor":   rsrp_n,
-                    "rsrq_neighbor":   rsrq_n,
-                    "l3_rsrp_serving": l3_s,
-                    "l3_rsrp_neighbor":l3_n,
-                    "ue_speed":        speed,
-                    "pos_x":           500,
-                    "pos_y":           500,
-                    "rsrp_diff":       rsrp_s - rsrp_n,
-                    "cell_load_pct":   load,
-                    "los_flag":        los,
-                }
-                df_manual = pd.DataFrame(
-                    [{**row, "timestamp": t} for t in range(int(n_rows))]
-                )
-
-                with st.spinner(f"Running {selected_model}…"):
-                    result_df = _run_live_prediction(
-                        df_manual, selected_model, models, feat_cols, scaler
-                    )
-
-                # Show result for the last row (most accurate — has full lag history)
-                last_risk = float(result_df["risk_pct"].iloc[-1])
-                threshold_pct = prob_threshold * 100
-                decision = "⚠️ HANDOVER LIKELY" if last_risk >= threshold_pct else "✓ No handover expected"
-                decision_color = "red" if last_risk >= threshold_pct else "green"
-
-                col_g, col_info = st.columns([1, 1])
-
+                row = {"ue_id": 0, "rsrp_serving": rsrp_s, "rsrq_serving": rsrq_s,
+                       "sinr": sinr, "cqi": cqi, "rsrp_neighbor": rsrp_n,
+                       "rsrq_neighbor": rsrq_n, "l3_rsrp_serving": l3_s,
+                       "l3_rsrp_neighbor": l3_n, "ue_speed": speed,
+                       "rsrp_diff": rsrp_s - rsrp_n, "cell_load_pct": load}
+                df_manual = pd.DataFrame([{**row, "timestamp": t} for t in range(int(n_rows))])
+                res = score_live(df_manual, model)
+                last_risk = float(res["risk_pct"].iloc[-1])
+                thr_pct = prob_threshold * 100
+                col_g, col_info = st.columns(2)
                 with col_g:
-                    fig_gauge = go.Figure(go.Indicator(
-                        mode="gauge+number",
-                        value=last_risk,
-                        number={"suffix": "%", "font": {"size": 40}},
+                    fig_g = go.Figure(go.Indicator(
+                        mode="gauge+number", value=last_risk, number={"suffix": "%"},
                         title={"text": f"Handover Risk — {selected_model}"},
-                        gauge={
-                            "axis": {"range": [0, 100]},
-                            "bar":  {"color": "darkred"},
-                            "steps": [
-                                {"range": [0,  30],  "color": "#2dc653"},
-                                {"range": [30, 60],  "color": "#f0c040"},
-                                {"range": [60, 100], "color": "#e34234"},
-                            ],
-                            "threshold": {
-                                "line":      {"color": "black", "width": 4},
-                                "thickness": 0.75,
-                                "value":     threshold_pct,
-                            },
-                        },
-                    ))
-                    fig_gauge.update_layout(height=280, margin=dict(t=30, b=10))
-                    st.plotly_chart(fig_gauge, use_container_width=True)
-
+                        gauge={"axis": {"range": [0, 100]}, "bar": {"color": "darkred"},
+                               "threshold": {"line": {"color": "black", "width": 4},
+                                             "thickness": 0.75, "value": thr_pct}}))
+                    fig_g.update_layout(height=280, margin=dict(t=30, b=10))
+                    st.plotly_chart(fig_g, use_container_width=True)
                 with col_info:
-                    st.markdown(f"### {decision}")
-                    st.markdown(f"**Risk score:** `{last_risk:.1f}%`")
-                    st.markdown(f"**Threshold:** `{threshold_pct:.0f}%`  *(adjust in sidebar)*")
-                    st.markdown(f"**Model:** `{selected_model}`")
-                    st.markdown("---")
-                    st.markdown("**Input summary**")
-                    st.markdown(
-                        f"- RSRP gap (serving − neighbour): `{rsrp_s - rsrp_n:+.1f} dB`  \n"
-                        f"- SINR: `{sinr} dB`  \n"
-                        f"- Speed: `{speed} m/s`  \n"
-                        f"- LOS: `{'yes' if los else 'no'}`"
-                    )
+                    st.markdown("### " + ("⚠️ HANDOVER LIKELY" if last_risk >= thr_pct
+                                          else "✓ No handover expected"))
+                    st.markdown(f"**Risk:** `{last_risk:.1f}%` · **Threshold:** `{thr_pct:.0f}%`")
+                    st.markdown(f"- L3 gap (neighbour − serving): `{l3_n - l3_s:+.1f} dB` "
+                                f"(A3 triggers above +3 dB)  \n- SINR: `{sinr} dB`  \n"
+                                f"- Speed: `{speed} m/s`")
 
 
 # ── Tab 5: Model Comparison ────────────────────────────────────────────────────
 
 with tab_cmp:
-    st.subheader("Model Comparison")
-    report_path = ROOT / "reports" / "evaluation.txt"
-    if report_path.exists():
-        report_lines = report_path.read_text().splitlines()
+    st.subheader("Model Comparison (test split)")
+    ev, op = load_report("evaluation.json"), load_report("operational.json")
+    if ev:
         rows = []
-        model_names = [
-            "Logistic Regression", "Random Forest", "XGBoost",
-            "LSTM", "GRU", "Stacking Ensemble",
-        ]
-        for name in model_names:
-            prec = rec = f1 = auc = None
-            for i, ln in enumerate(report_lines):
-                if ln.strip().startswith(f"── {name}"):
-                    for j in range(i + 1, min(i + 8, len(report_lines))):
-                        if "Precision" in report_lines[j]:
-                            prec = report_lines[j].split(":")[-1].strip()
-                        if "Recall"    in report_lines[j]:
-                            rec  = report_lines[j].split(":")[-1].strip()
-                        if "F1-score"  in report_lines[j]:
-                            f1   = report_lines[j].split(":")[-1].strip()
-                        if "ROC-AUC"  in report_lines[j]:
-                            auc  = report_lines[j].split(":")[-1].strip()
-            if prec:
-                rows.append({"Model": name, "Precision": prec,
-                             "Recall": rec, "F1": f1, "ROC-AUC": auc})
-        if rows:
-            cmp_df = pd.DataFrame(rows).set_index("Model")
-            st.dataframe(cmp_df, use_container_width=True)
-        else:
-            st.code(report_path.read_text())
+        for name, m in ev["models"].items():
+            o = (op or {}).get("models", {}).get(name, {})
+            rows.append({
+                "Model": name, "Threshold": m["threshold"], "Precision": m["precision"],
+                "Recall": m["recall"], "F1": m["f1"], "F1 @0.5": m["f1_0.5"],
+                "ROC-AUC": m["roc_auc"], "PR-AUC": m["pr_auc"],
+                "Event recall @3s": o.get("event_recall@3s"),
+                "Mean lead (s)": o.get("mean_lead_s"),
+                "False-alarm time": o.get("false_alarm_time_share"),
+                f"Event recall @≤{(op or {}).get('false_alarm_time_budget', 0.05):.0%} false-alarm time":
+                    (op or {}).get("event_recall_at_budget", {}).get(name),
+            })
+        st.dataframe(pd.DataFrame(rows).set_index("Model"), use_container_width=True)
+        st.caption(f"{ev['n_rows']} test rows (same rows for every model), positive rate "
+                   f"{ev['pos_rate']:.3f}. Thresholds tuned on validation. "
+                   "Rule (A3 gap) is a no-learning baseline.")
+        for img in ["roc_curves.png", "pr_curves.png"]:
+            path = ROOT / "reports" / img
+            if path.exists():
+                st.image(str(path), use_container_width=True)
     else:
         st.info("Run `python run_pipeline.py` to generate evaluation results.")
 
@@ -900,9 +582,11 @@ with tab_mlf:
                 for r in runs:
                     rows.append({
                         "Run Name":   r.data.tags.get("mlflow.runName", r.info.run_id[:8]),
-                        "Val F1":     r.data.metrics.get("val_f1",       "—"),
+                        "Val F1 (tuned)": r.data.metrics.get("val_f1_tuned", "—"),
+                        "Val AUC":    r.data.metrics.get("val_roc_auc",  "—"),
                         "Test F1":    r.data.metrics.get("test_f1",      "—"),
                         "Test AUC":   r.data.metrics.get("test_roc_auc", "—"),
+                        "Test PR-AUC": r.data.metrics.get("test_pr_auc", "—"),
                         "Status":     r.info.status,
                         "Run ID":     r.info.run_id[:8],
                     })
@@ -936,4 +620,37 @@ with tab_map:
     fig_map.update_layout(xaxis_range=[0, 1000], yaxis_range=[0, 1000])
     st.plotly_chart(fig_map, use_container_width=True)
 
-st.caption("LTE Handover Prediction Dashboard · Phase 5")
+# ── Tab 9: Proactive handover (closed loop + generalization) ───────────────────
+
+with tab_pho:
+    st.subheader("🛰️ Does prediction improve the network?")
+    st.markdown(
+        "The closed-loop experiment (`src/closed_loop.py`) re-runs the simulator on "
+        "unseen seeds with the champion model **inside** the handover loop. Each "
+        "policy sets the time-to-trigger (TTT) of every UE at every second; mobility "
+        "and fading are identical across policies, so differences come from the "
+        "handover decisions only."
+    )
+    cl = load_report("closed_loop.json")
+    if cl:
+        rows = [{"Policy": p, **{k: f"{v['mean']:.3g} ± {v['std']:.2g}"
+                                 for k, v in m.items()}}
+                for p, m in cl["policies"].items()]
+        st.dataframe(pd.DataFrame(rows).set_index("Policy"), use_container_width=True)
+        st.caption(cl.get("note", ""))
+        img = ROOT / "docs" / "img" / "closed_loop.png"
+        if img.exists():
+            st.image(str(img), use_container_width=True)
+    else:
+        st.info("Run `python -m src.closed_loop` to produce reports/closed_loop.json.")
+
+    st.markdown("---")
+    st.subheader("Generalization to unseen networks")
+    gen = load_report("generalization.json")
+    if gen:
+        st.dataframe(pd.DataFrame(gen["rows"]).set_index(["dataset", "model"]),
+                     use_container_width=True)
+    else:
+        st.info("Run `python -m src.generalization` to produce reports/generalization.json.")
+
+st.caption("LTE Handover Prediction Dashboard")
