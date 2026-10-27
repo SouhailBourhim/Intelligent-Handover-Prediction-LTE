@@ -5,18 +5,19 @@ Usage
 -----
     python scripts/make_figures.py            # uses data/raw/dataset.csv, simulates it if missing
 
-Every figure is derived from the simulator modules in src/ or from the
-simulated dataset, except the model-comparison chart, which reads
-reports/evaluation.txt when present and otherwise falls back to the
-documented run (the table in README.md).
-
-Only numpy / pandas / matplotlib are required — no model training.
+Figures 1–6 are derived from the simulator modules in src/ or from the
+simulated dataset (numpy / pandas / matplotlib only).  Figures 7–10 read the
+pipeline's JSON reports (reports/evaluation.json, operational.json,
+closed_loop.json, generalization.json, models/thresholds.json) and are
+skipped with a message when those do not exist yet.  The ROC / PR /
+confusion-matrix plots from the evaluation phase are copied from reports/.
 """
 
 from __future__ import annotations
 
+import json
 import math
-import re
+import shutil
 import sys
 from pathlib import Path
 
@@ -38,7 +39,7 @@ from src.radio_model import (  # noqa: E402
 )
 
 RAW_PATH = ROOT / "data" / "raw" / "dataset.csv"
-EVAL_PATH = ROOT / "reports" / "evaluation.txt"
+REPORTS = ROOT / "reports"
 OUT_DIR = ROOT / "docs" / "img"
 
 BS_POS = [(250.0, 250.0), (750.0, 250.0), (250.0, 750.0), (750.0, 750.0)]
@@ -106,7 +107,7 @@ def fig_network_map(df: pd.DataFrame):
         # Expected path loss: LOS/NLOS mixed by the 3GPP LOS probability
         pl = np.array([p_los(v) * path_loss_los(v) + (1 - p_los(v)) * path_loss_nlos(v)
                        for v in d]).reshape(X.shape)
-        rsrp.append(RADIO.tx_power_dbm - pl)
+        rsrp.append(RADIO.rs_power_dbm - pl)   # per-RE RSRP
     rsrp = np.stack(rsrp)
     best = rsrp.argmax(axis=0)
     best_rsrp = rsrp.max(axis=0)
@@ -116,7 +117,7 @@ def fig_network_map(df: pd.DataFrame):
     from matplotlib.colors import ListedColormap
     ax.imshow(best, origin="lower", extent=(0, 1000, 0, 1000),
               cmap=ListedColormap(CELL_COLORS), alpha=0.12, interpolation="nearest")
-    cs = ax.contour(xs, xs, best_rsrp, levels=[-70, -60],
+    cs = ax.contour(xs, xs, best_rsrp, levels=[-100, -90],
                     colors=MUTED, linewidths=0.6, alpha=0.7)
     ax.clabel(cs, fmt="%d dBm", fontsize=7)
 
@@ -352,23 +353,25 @@ def fig_temporal_split(df: pd.DataFrame):
 def fig_failure_model():
     fig, axes = plt.subplots(1, 3, figsize=(13, 3.4), sharey=True)
     sinr = np.linspace(-25, 20, 200)
+    typ_rsrp = HO.target_rsrp_start      # target RSRP that adds no risk
     for spd, ls in [(1.5, ":"), (14, "-")]:
-        axes[0].plot(sinr, [ho_failure_prob(s, spd, -70, 0) for s in sinr], color=INK, ls=ls,
+        axes[0].plot(sinr, [ho_failure_prob(s, spd, typ_rsrp, 0) for s in sinr], color=INK, ls=ls,
                      lw=2, label=f"speed {spd} m/s" + (" (vehicle)" if spd > 5 else " (pedestrian)"))
     axes[0].set_xlabel("serving SINR at HO (dB)")
     axes[0].set_ylabel("P(HO failure)")
     axes[0].set_title("SINR  (weight 0.50)")
     axes[0].legend(fontsize=8.5)
 
-    tgt = np.linspace(-110, -55, 200)
+    tgt = np.linspace(HO.target_rsrp_end - 8, HO.target_rsrp_start + 15, 200)
     axes[1].plot(tgt, [ho_failure_prob(0, 10, r, 0) for r in tgt], color=CELL_COLORS[0], lw=2)
-    axes[1].set_xlabel("target-cell RSRP (dBm)")
+    axes[1].set_xlabel("target-cell RSRP (dBm, per RE)")
     axes[1].set_title("Target RSRP  (weight 0.15)")
     axes[1].invert_xaxis()
 
     steps = np.arange(0, 40)
-    axes[2].plot(steps, [ho_failure_prob(0, 10, -70, s) for s in steps], color=CELL_COLORS[3], lw=2)
-    axes[2].set_xlabel("steps already spent below −85 dBm")
+    axes[2].plot(steps, [ho_failure_prob(0, 10, typ_rsrp, s) for s in steps],
+                 color=CELL_COLORS[3], lw=2)
+    axes[2].set_xlabel(f"steps already spent below {HO.low_rsrp_threshold_dbm:.0f} dBm")
     axes[2].set_title("Sustained low RSRP  (weight 0.20)")
     for ax in axes:
         ax.axhline(HO.fail_cap, color=MUTED, ls="--", lw=0.8)
@@ -382,68 +385,166 @@ def fig_failure_model():
 
 # ── 7. Model comparison ───────────────────────────────────────────────────────
 
-# Documented run (README.md, Phase 4); used when reports/evaluation.txt is absent.
-DOCUMENTED = {
-    "Logistic Regression": (0.352, 0.869, 0.501, 0.898),
-    "Random Forest":       (0.433, 0.736, 0.545, 0.911),
-    "XGBoost":             (0.426, 0.778, 0.550, 0.919),
-    "LSTM":                (0.342, 0.781, 0.476, 0.881),
-    "GRU":                 (0.332, 0.809, 0.471, 0.865),
-    "Stacking Ensemble":   (0.561, 0.403, 0.469, 0.919),
-}
+MODEL_ORDER = ["Logistic Regression", "Random Forest", "XGBoost", "LSTM", "GRU",
+               "Stacking Ensemble", "Rule (A3 gap)"]
 
 
-def _load_metrics() -> dict[str, tuple[float, float, float, float]]:
-    if not EVAL_PATH.exists():
-        return DOCUMENTED
-    out, cur, vals = {}, None, {}
-    for ln in EVAL_PATH.read_text(encoding="utf-8").splitlines():
-        m = re.match(r"^[=\-\s]*([A-Za-z][A-Za-z _]+?)\s*[=\-]*$", ln.strip())
-        key = ln.split(":")[0].strip().lower() if ":" in ln else ""
-        if ":" in ln and key.startswith(("precision", "recall", "f1", "roc")):
-            try:
-                vals[key.split()[0].split("-")[0]] = float(ln.split(":")[-1])
-            except ValueError:
-                pass
-        elif m and ":" not in ln and m.group(1).strip():
-            if cur and len(vals) >= 4:
-                out[cur] = (vals["precision"], vals["recall"], vals["f1"], vals["roc"])
-            cur, vals = m.group(1).strip().replace("_", " ").title(), {}
-    if cur and len(vals) >= 4:
-        out[cur] = (vals["precision"], vals["recall"], vals["f1"], vals["roc"])
-    return out if len(out) >= 3 else DOCUMENTED
+def _json(path: Path):
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
 
 
 def fig_model_comparison():
-    metrics = _load_metrics()
-    names = list(metrics)
-    arr = np.array([metrics[n] for n in names])
-    score = 0.6 * arr[:, 2] + 0.4 * arr[:, 3]
-    champ = int(np.argmax(score))
+    ev, val = _json(REPORTS / "evaluation.json"), _json(ROOT / "models" / "thresholds.json")
+    if not ev or not val:
+        print("  skipped model_comparison.png (run the pipeline first)")
+        return
+    names = [n for n in MODEL_ORDER if n in ev["models"]]
+    m = ev["models"]
+    arr = np.array([[m[n]["precision"], m[n]["recall"], m[n]["f1"], m[n]["roc_auc"],
+                     m[n]["pr_auc"]] for n in names])
+    learned = [n for n in names if n in val and not n.startswith("Rule")]
+    score = {n: 0.6 * val[n]["val_f1_tuned"] + 0.4 * val[n]["val_roc_auc"] for n in learned}
+    champ = max(score, key=score.get)
 
-    fig, (ax, ax2) = plt.subplots(1, 2, figsize=(13, 4), gridspec_kw={"width_ratios": [3, 1.3]})
-    labels = ["Precision", "Recall", "F1", "ROC-AUC"]
-    colors = ["#94a3b8", "#64748b", POS, CELL_COLORS[0]]
+    fig, (ax, ax2) = plt.subplots(1, 2, figsize=(14, 4.2), gridspec_kw={"width_ratios": [3, 1.3]})
+    labels = ["Precision", "Recall", "F1", "ROC-AUC", "PR-AUC"]
+    colors = ["#94a3b8", "#64748b", POS, CELL_COLORS[0], CELL_COLORS[2]]
     x = np.arange(len(names))
-    bw = 0.2
+    bw = 0.16
     for j, (lab, c) in enumerate(zip(labels, colors)):
-        ax.bar(x + (j - 1.5) * bw, arr[:, j], bw, color=c, label=lab)
+        ax.bar(x + (j - 2) * bw, arr[:, j], bw, color=c, label=lab)
     ax.set_xticks(x)
     ax.set_xticklabels([n.replace(" ", "\n", 1) for n in names], fontsize=9)
     ax.set_ylim(0, 1.05)
-    ax.set_title("Test-set metrics at threshold 0.5")
-    ax.legend(ncol=4, loc="upper left", fontsize=8.5)
+    ax.set_title(f"Test set — {ev['n_rows']} rows, {ev['pos_rate']:.1%} positive, "
+                 "thresholds tuned on validation")
+    ax.legend(ncol=5, loc="upper left", fontsize=8.5)
 
-    order = np.argsort(score)
-    ax2.barh([names[i] for i in order], score[order],
-             color=[POS if i == champ else NEG for i in order])
-    for k, i in enumerate(order):
-        ax2.text(score[i] + 0.004, k, f"{score[i]:.3f}", va="center", fontsize=8.5)
-    ax2.set_xlim(0.58, 0.72)
-    ax2.set_title("Champion score = 0.6·F1 + 0.4·AUC")
+    order = sorted(score, key=score.get)
+    ax2.barh(order, [score[n] for n in order], color=[POS if n == champ else NEG for n in order])
+    for k, n in enumerate(order):
+        ax2.text(score[n] + 0.002, k, f"{score[n]:.3f}", va="center", fontsize=8.5)
+    lo = min(score.values())
+    ax2.set_xlim(lo - 0.03, max(score.values()) + 0.02)
+    ax2.set_title("Selection on VALIDATION: 0.6·F1 + 0.4·AUC")
     ax2.grid(axis="y", visible=False)
     fig.tight_layout()
     _save(fig, "model_comparison.png")
+
+
+# ── 8. Operational curves ─────────────────────────────────────────────────────
+
+MODEL_COLORS = {
+    "Logistic Regression": "#4e79a7", "Random Forest": "#f28e2b", "XGBoost": "#e15759",
+    "LSTM": "#59a14f", "GRU": "#76b7b2", "Stacking Ensemble": "#b07aa1",
+    "Rule (A3 gap)": "#7b8794",
+}
+
+
+def fig_operational():
+    op = _json(REPORTS / "operational.json")
+    if not op:
+        print("  skipped operational.png (run the pipeline first)")
+        return
+    budget = op["false_alarm_time_budget"]
+    fig, (ax, ax2) = plt.subplots(1, 2, figsize=(13, 4.4), gridspec_kw={"width_ratios": [1.5, 1]})
+    for n in MODEL_ORDER:
+        if n not in op["curves"]:
+            continue
+        c = sorted(op["curves"][n], key=lambda r: r["false_alarm_time_share"])
+        ax.plot([100 * r["false_alarm_time_share"] for r in c],
+                [100 * r["event_recall@3s"] for r in c],
+                color=MODEL_COLORS[n], lw=2.2 if n.startswith("Rule") else 1.6,
+                ls="--" if n.startswith("Rule") else "-", label=n)
+    ax.axvline(100 * budget, color=INK, lw=0.8, ls=":")
+    ax.text(100 * budget + 0.3, 8, f"budget {budget:.0%}", fontsize=8.5, color=INK)
+    ax.set_xlim(0, 25)
+    ax.set_ylim(0, 102)
+    ax.set_xlabel("false-alarm time (% of seconds with a useless alarm)")
+    ax.set_ylabel("handovers caught 1–3 s ahead (%)")
+    ax.set_title("Operating curves — threshold swept from 0.02 to 0.98")
+    ax.legend(fontsize=8.5, loc="lower right")
+
+    names = [n for n in MODEL_ORDER if n in op["event_recall_at_budget"]]
+    vals = [100 * op["event_recall_at_budget"][n] for n in names]
+    ax2.barh(names[::-1], vals[::-1], color=[MODEL_COLORS[n] for n in names[::-1]])
+    for k, v in enumerate(vals[::-1]):
+        ax2.text(v + 1, k, f"{v:.0f} %", va="center", fontsize=8.5)
+    ax2.set_xlim(0, 105)
+    ax2.set_title(f"Handovers caught at ≤ {budget:.0%} false-alarm time")
+    ax2.grid(axis="y", visible=False)
+    fig.tight_layout()
+    _save(fig, "operational.png")
+
+
+# ── 9. Closed loop ────────────────────────────────────────────────────────────
+
+POLICY_COLORS = {"baseline": "#7b8794", "always_short": "#f59e0b", "always_long": "#3b82f6",
+                 "random_gate": "#cbd2d9", "predictive": "#ef4444"}
+
+
+def fig_closed_loop():
+    cl = _json(REPORTS / "closed_loop.json")
+    if not cl:
+        print("  skipped closed_loop.png (run python -m src.closed_loop first)")
+        return
+    kpis = [("ho_failure_rate", "HO failure rate (%)", 100),
+            ("ping_pong_rate", "ping-pong rate (%)", 100),
+            ("ho_attempts_per_ue_hour", "HO attempts / UE-hour", 1),
+            ("outage_share", "time with SINR < −5 dB (%)", 100)]
+    pols = ["baseline", "random_gate", "predictive", "always_short", "always_long"]
+    fig, axes = plt.subplots(1, 4, figsize=(15, 3.8))
+    for ax, (k, title, mult) in zip(axes, kpis):
+        means = [mult * cl["policies"][p][k]["mean"] for p in pols]
+        stds  = [mult * cl["policies"][p][k]["std"] for p in pols]
+        ax.bar(range(len(pols)), means, yerr=stds, capsize=3,
+               color=[POLICY_COLORS[p] for p in pols], edgecolor="white")
+        ax.set_xticks(range(len(pols)))
+        ax.set_xticklabels([p.replace("_", "\n") for p in pols], fontsize=8.5)
+        ax.set_title(title, fontsize=10)
+        ax.grid(axis="x", visible=False)
+    fig.suptitle(f"Closed loop on {len(cl['seeds'])} unseen seeds × {cl['n_steps']} s — "
+                 f"{cl['model']} decides the TTT of every UE every second (mean ± std over seeds)",
+                 x=0.01, ha="left", fontweight="bold", fontsize=11)
+    fig.tight_layout()
+    _save(fig, "closed_loop.png")
+
+
+# ── 10. Generalization ────────────────────────────────────────────────────────
+
+def fig_generalization():
+    gen = _json(REPORTS / "generalization.json")
+    if not gen:
+        print("  skipped generalization.png (run python -m src.generalization first)")
+        return
+    df = pd.DataFrame(gen["rows"]).dropna(subset=["pr_auc"])
+    sets = list(dict.fromkeys(df["dataset"]))
+    fig, axes = plt.subplots(1, 2, figsize=(13, 4.2), sharey=True)
+    for ax, (k, title) in zip(axes, [("pr_auc", "PR-AUC"),
+                                     ("false_alarm_time_share", "false-alarm time")]):
+        for j, (model, c) in enumerate([(gen["champion"], POS), ("Rule (A3 gap)", NEG)]):
+            vals = [df[(df.dataset == s) & (df.model == model)][k].iloc[0] for s in sets]
+            ax.barh(np.arange(len(sets)) + (0.2 if j == 0 else -0.2), vals, 0.38,
+                    color=c, label=model)
+        ax.set_title(title)
+        ax.grid(axis="y", visible=False)
+    axes[0].set_yticks(range(len(sets)))
+    axes[0].set_yticklabels(sets, fontsize=9)
+    axes[0].invert_yaxis()
+    handles, labels = axes[0].get_legend_handles_labels()
+    fig.legend(handles, labels, fontsize=8.5, loc="upper right", ncol=2)
+    fig.suptitle("Generalization — fresh simulations never used for training or model selection",
+                 x=0.01, ha="left", fontweight="bold", fontsize=11)
+    fig.tight_layout()
+    _save(fig, "generalization.png")
+
+
+def copy_report_plots():
+    for name in ["roc_curves.png", "pr_curves.png", "confusion_matrices.png"]:
+        src = REPORTS / name
+        if src.exists():
+            shutil.copy2(src, OUT_DIR / name)
+            print(f"  copied reports/{name}")
 
 
 def main():
@@ -456,6 +557,10 @@ def main():
     fig_temporal_split(df)
     fig_failure_model()
     fig_model_comparison()
+    fig_operational()
+    fig_closed_loop()
+    fig_generalization()
+    copy_report_plots()
 
 
 if __name__ == "__main__":

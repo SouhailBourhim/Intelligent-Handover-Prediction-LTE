@@ -1,8 +1,12 @@
 """
-Handover state machine — LTE handover simulation (v3)
+Handover state machine — LTE handover simulation (v4)
 
-Improvements over v2
---------------------
+v4: absolute thresholds are on the per-resource-element RSRP scale
+(TS 36.214), i.e. 27.8 dB lower than the v3 total-power scale; HO behaviour
+is unchanged by the rescale.  TTT and failure use the UE's instantaneous
+speed, a policy may override TTT per step (closed-loop experiment), and only
+executed handovers enter the ping-pong history.
+
 L3 filtering
     UE applies an exponential moving average (α = 0.5) to raw RSRP measurements
     before feeding them to the HO trigger.  This models the Layer-1 / Layer-3
@@ -16,8 +20,8 @@ Velocity-aware TTT
     at 1 m/s keeps TTT=3.  This reduces the "too-late" handover problem.
 
 A3 / A4 / A5 event classification (on L3-filtered RSRP)
-    A5  serving_L3 < −68 dBm  AND  neighbour_L3 > −60 dBm  (coverage emergency)
-    A4  neighbour_L3 > −55 dBm                               (strong target)
+    A5  serving_L3 < −96 dBm  AND  neighbour_L3 > −88 dBm  (coverage emergency)
+    A4  neighbour_L3 > −83 dBm                               (strong target)
     A3  neighbour_L3 > serving_L3 + margin_db                (relative, default)
 
 Enhanced HO failure probability
@@ -52,12 +56,13 @@ class HOConfig:
     ttt_min_steps:  int = 1
     ttt_speed_divisor: float = 7.0   # m/s per TTT step reduction
 
+    # Absolute thresholds are on the per-RE RSRP scale (v3 values − 28 dB)
     # A4 absolute threshold (neighbour RSRP)
-    a4_threshold_dbm: float = -55.0
+    a4_threshold_dbm: float = -83.0
 
     # A5 double thresholds
-    a5_serving_threshold_dbm:  float = -68.0
-    a5_neighbor_threshold_dbm: float = -60.0
+    a5_serving_threshold_dbm:  float = -96.0
+    a5_neighbor_threshold_dbm: float = -88.0
 
     # L3 measurement filter coefficient (0 = frozen, 1 = no filter)
     l3_alpha: float = 0.5
@@ -69,8 +74,8 @@ class HOConfig:
     sinr_fail_scale_db: float = 5.0     # sigmoid steepness (softer)
     speed_fail_pivot:   float = 28.0    # m/s at which p_speed = 0.5 (above veh max)
     speed_fail_scale:   float = 6.0
-    target_rsrp_start:  float = -70.0   # RSRP below this starts adding failure risk
-    target_rsrp_end:    float = -105.0  # RSRP here → full target contribution
+    target_rsrp_start:  float = -98.0   # RSRP below this starts adding failure risk
+    target_rsrp_end:    float = -133.0  # RSRP here → full target contribution
     low_rsrp_decay:     int   = 25      # steps of low RSRP → max sustained contribution
     # weights (must sum to 1.0)
     w_sinr:      float = 0.50
@@ -88,7 +93,7 @@ class HOConfig:
     rlf_duration_steps: int = 3
 
     # Low RSRP threshold (for sustained counter)
-    low_rsrp_threshold_dbm: float = -85.0
+    low_rsrp_threshold_dbm: float = -113.0
 
 
 HO = HOConfig()
@@ -197,10 +202,14 @@ def evaluate_handover(
     current_t:    int,
     rng:          np.random.Generator,
     cfg:          HOConfig = HO,
+    ttt_override: Optional[int] = None,
 ) -> Tuple[bool, int, str, bool, bool]:
     """
     Run the A3 TTT state machine and, on TTT expiry, classify the event and
     determine outcome (success / failure / ping-pong).
+
+    ttt_override replaces the velocity-aware TTT for this step (used by the
+    closed-loop policies); None keeps the default behaviour.
 
     Returns
     -------
@@ -241,7 +250,8 @@ def evaluate_handover(
     a3_condition     = (best_nb_l3 > l3_srv + effective_margin)
 
     # TTT state machine
-    ttt_steps = velocity_ttt(ue.speed, cfg)
+    ttt_steps = (ttt_override if ttt_override is not None
+                 else velocity_ttt(ue.current_speed, cfg))
 
     if a3_condition and ue.ttt_candidate == best_nb_id:
         ue.ttt_counter += 1
@@ -263,26 +273,25 @@ def evaluate_handover(
 
     # Enhanced failure probability
     target_rsrp = l3_rsrp_map.get(best_nb_id, -140.0) if best_nb_id >= 0 else -140.0
-    p_fail      = ho_failure_prob(raw_sinr_db, ue.speed, target_rsrp,
+    p_fail      = ho_failure_prob(raw_sinr_db, ue.current_speed, target_rsrp,
                                   ue.steps_at_low_rsrp, cfg)
     ho_failed   = bool(rng.random() < p_fail)
 
-    # Ping-pong detection
+    if ho_failed:
+        ue.rlf_remaining = cfg.rlf_duration_steps
+        return True, best_nb_id, event_type, True, False
+
+    # Ping-pong detection (only executed handovers are in the history)
     pp = is_ping_pong(ue.ho_history, ue.serving_cell, best_nb_id, current_t, cfg)
 
-    # Record in HO history
     ue.ho_history.append((ue.serving_cell, best_nb_id, current_t))
     if len(ue.ho_history) > 30:
         ue.ho_history.pop(0)
 
-    # If ping-pong on a successful HO: apply extra margin on the reverse pair
-    if pp and not ho_failed:
+    # Ping-pong: apply extra margin on the reverse pair
+    if pp:
         rev_key = (best_nb_id, ue.serving_cell)
         ue.pp_extra_margin[rev_key]     = cfg.pp_extra_margin_db
         ue.pp_margin_remaining[rev_key] = cfg.pp_margin_decay_steps
-
-    if ho_failed:
-        ue.rlf_remaining = cfg.rlf_duration_steps
-        return True, best_nb_id, event_type, True, pp
 
     return True, best_nb_id, event_type, False, pp

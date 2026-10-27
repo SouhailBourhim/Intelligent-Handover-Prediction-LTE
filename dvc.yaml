@@ -4,6 +4,7 @@ stages:
     cmd: python simulate.py
     deps:
       - simulate.py
+      - src/simulator.py
       - src/radio_model.py
       - src/mobility.py
       - src/handover_logic.py
@@ -29,6 +30,7 @@ stages:
       - data/processed/train.csv
       - data/processed/val.csv
       - data/processed/meta.json
+      - models/scaler.pkl
     outs:
       - models/logistic_regression.pkl
       - models/random_forest.pkl
@@ -36,12 +38,16 @@ stages:
       - models/lstm.pt
       - models/gru.pt
       - models/stacking_ensemble.pkl
+      - models/rule_a3_gap.pkl
+      - models/thresholds.json:
+          cache: false
       - models/mlflow_run_ids.json
 
   evaluate:
     cmd: python run_pipeline.py --phase 4
     deps:
       - src/evaluate.py
+      - src/operational.py
       - data/processed/test.csv
       - data/processed/meta.json
       - models/logistic_regression.pkl
@@ -50,9 +56,16 @@ stages:
       - models/lstm.pt
       - models/gru.pt
       - models/stacking_ensemble.pkl
+      - models/rule_a3_gap.pkl
+      - models/thresholds.json
     outs:
       - reports/evaluation.txt
+      - reports/evaluation.json:
+          cache: false
+      - reports/operational.json:
+          cache: false
       - reports/roc_curves.png
+      - reports/pr_curves.png
       - reports/confusion_matrices.png
 
   explain:
@@ -64,5 +77,44 @@ stages:
       - models/logistic_regression.pkl
       - models/random_forest.pkl
       - models/xgboost.pkl
+      - models/lstm.pt
+      - models/stacking_ensemble.pkl
     outs:
       - reports/shap
+
+  promote:
+    cmd: python scripts/promote_best_model.py
+    deps:
+      - scripts/promote_best_model.py
+      - models/thresholds.json
+      - reports/evaluation.json
+    outs:
+      - models/champion:
+          cache: false
+
+  generalize:
+    cmd: python -m src.generalization
+    deps:
+      - src/generalization.py
+      - src/serving.py
+      - src/simulator.py
+      - generate_test_dataset.py
+      - models/champion
+      - models/scaler.pkl
+    outs:
+      - reports/generalization.json:
+          cache: false
+
+  closed_loop:
+    cmd: python -m src.closed_loop
+    deps:
+      - src/closed_loop.py
+      - src/simulator.py
+      - src/handover_logic.py
+      - models/champion
+      - models/thresholds.json
+      - models/scaler.pkl
+      - data/processed/val.csv
+    outs:
+      - reports/closed_loop.json:
+          cache: false

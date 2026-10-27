@@ -5,123 +5,133 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```bash
-# Dataset generation (only needed once — output is data/raw/dataset.csv)
-python simulate.py
-
-# Full pipeline (phases 2 → 3 → 4 → 5)
-python run_pipeline.py
-
-# Individual phases
-python run_pipeline.py --phase 2   # feature engineering
-python run_pipeline.py --phase 3   # model training
-python run_pipeline.py --phase 4   # evaluation
-python run_pipeline.py --phase 5   # SHAP explanations
-
-# Promote the best model to models/champion/
-python scripts/promote_best_model.py
-
-# Generate a test CSV for live prediction (4 scenarios: default, vehicle, stable, cell_edge)
-python generate_test_dataset.py                               # default scenario
-python generate_test_dataset.py --scenario vehicle --ues 8   # vehicle scenario
-# Pre-generated samples already in data/test_scenarios/
-
-# Regenerate README figures in docs/img/ (numpy/pandas/matplotlib only)
-python scripts/make_figures.py
-
-# Streamlit dashboard
-streamlit run app/dashboard.py
-
-# DVC pipeline (CI-safe — skips the heavy simulate step)
-# Reproduce only stale stages (checks .dvc/cache first)
+# Full pipeline (8 DVC stages: simulate → features → train → evaluate → explain
+#   → promote → generalize → closed_loop), ~7 min on CPU; reruns only stale stages
 dvc repro
-
-# Check which stages are stale without running anything
 dvc status
 
-# Execute a notebook with the project kernel (required — default kernel lacks seaborn/torch)
-jupyter nbconvert --to notebook --execute --inplace \
-  --ExecutePreprocessor.timeout=300 \
-  --ExecutePreprocessor.kernel_name=lte_venv \
+# Same steps by hand
+python simulate.py                       # data/raw/dataset.csv
+python run_pipeline.py                   # phases 2–5 (or --phase 2|3|4|5)
+python scripts/promote_best_model.py     # models/champion/ (selection on validation)
+python -m src.generalization             # reports/generalization.json
+python -m src.closed_loop                # reports/closed_loop.json (~4 min)
+
+# Tests (36, ~10 s) — CI runs these before the pipeline
+pytest -q
+
+# Inference on raw measurements (any row order)
+python predict.py --csv data/test_scenarios/default_ues5_steps300_seed42.csv
+python predict.py --info
+
+# Scenario CSVs (default, vehicle, stable, cell_edge); samples in data/test_scenarios/
+python generate_test_dataset.py --scenario vehicle --ues 8
+
+# Figures and the French course PDF
+python scripts/make_figures.py           # docs/img/ (reads reports/*.json)
+python scripts/make_course_figures.py    # docs/cours/img/
+python scripts/build_course_pdf.py       # needs Edge or Chrome
+
+streamlit run app/dashboard.py
+
+# Notebooks: run nbconvert as a module of the project venv so the kernel resolves
+python -m ipykernel install --sys-prefix --name lte_venv   # once, inside the venv
+python -m nbconvert --to notebook --execute --inplace \
+  --ExecutePreprocessor.timeout=900 --ExecutePreprocessor.kernel_name=lte_venv \
   notebooks/<notebook>.ipynb
 ```
 
-There is no lint or test suite; the CI runs `dvc repro` end-to-end as the integration test.
+On Windows set `PYTHONIOENCODING=utf-8`; several scripts print box-drawing characters.
 
 ## Architecture
 
 ### Data flow
 
 ```
-simulate.py
-  └─ data/raw/dataset.csv (54 k rows, 15 UEs × 3600 s)
-       └─ src/features.py  →  data/processed/{train,val,test}.csv + scaler.pkl + meta.json
-            └─ src/models.py  →  models/{lr,rf,xgb,lstm,gru,stacking}.{pkl,pt} + mlflow_run_ids.json
-                 ├─ src/evaluate.py  →  reports/{evaluation.txt,roc_curves.png,confusion_matrices.png}
-                 └─ src/explain.py   →  reports/shap/shap_{bar,summary,waterfall}_*.png
-                      └─ scripts/promote_best_model.py  →  models/champion/{model} + metadata.json
+src/simulator.py (via simulate.py)
+  └─ data/raw/dataset.csv (54 k rows, 15 UEs × 3600 s, 27 columns)
+       └─ src/features.py  →  data/processed/{train,val,test}.csv + models/scaler.pkl + meta.json
+            └─ src/models.py  →  models/*.pkl|*.pt (7 models incl. rule baseline)
+                                + models/thresholds.json (validation thresholds & metrics)
+                 ├─ src/evaluate.py (+ operational.py) → reports/evaluation.{txt,json},
+                 │                                        operational.json, roc/pr/cm PNGs
+                 ├─ src/explain.py   →  reports/shap/
+                 └─ scripts/promote_best_model.py → models/champion/{model files, metadata.json}
+                      ├─ src/generalization.py → reports/generalization.json
+                      └─ src/closed_loop.py    → reports/closed_loop.json
 ```
 
-`run_pipeline.py` is the sole entry-point; it calls the `run_*()` function from each `src/` module in order. The DVC pipeline mirrors this exactly and is what the GitHub Actions CI uses.
+### Simulation (`src/simulator.py`, `radio_model.py`, `mobility.py`, `handover_logic.py`)
 
-### Simulation layer (`simulate.py`, `src/radio_model.py`, `src/mobility.py`, `src/handover_logic.py`)
+- **`simulator.py`** owns the step loop shared by `simulate.py`, `generate_test_dataset.py`, generalization and the closed loop. Each step: phase 1 *measure* (move, channel, L3, SINR/RSRQ/CQI) for all UEs, then optional `ttt_policy(t, recs) -> {ue_id: ttt}`, then phase 2 *decide* (A3 state machine, RLF countdown, RRC re-establishment). It uses **two RNG streams**: `rng` (mobility + channel) and `ho_rng` (failure draws), so policies never change trajectories (tested). Records carry internal `_a3_gap`/`_in_rlf` keys for policies; `run()` strips them. `make_simulator(ue_factory, seed, policy)` builds both streams from one seed. `add_handover_soon_label` lives here.
+- **`radio_model.py`**:
+  - RSRP is **per resource element** (`RadioConfig.rs_power_dbm` = 46 − 10·log10(600)), reported via `report_rsrp` in [−140, −44] dBm; the simulator uses `compute_rsrp(..., report=False)` internally and clamps only when writing rows.
+  - Noise per RE, so SINR equals the wideband ratio (tested).
+  - LOS is spatially consistent (`update_los_latent` / `los_from_latent`, 50 m).
+  - Fast fading is power-averaged over 1 + Δd/(λ/2) samples. In `update_fast_fading`, `ff_i` holds the last averaged dB value.
+- **`mobility.py`**: `UE.speed` is the cruise speed of the current leg (redrawn from `speed_range` at each waypoint); `UE.current_speed` is the distance actually travelled / dt (0 while paused) and is what TTT, failure and the `ue_speed` column use.
+- **`handover_logic.py`**:
+  - Thresholds are on the per-RE scale (A4 −83, A5 −96/−88, low RSRP −113, target ramp −98→−133).
+  - `evaluate_handover(..., ttt_override=None)`; A3 is the only trigger, and `event_type` is a descriptive tag.
+  - Only executed handovers enter `ho_history` (ping-pong detection).
 
-- **`radio_model.py`** — 3GPP UMa LOS/NLOS path loss, Gudmundson AR(1) shadow fading, AR(1) complex Gaussian fast fading, L3 EMA filtering (`alpha=0.5`), SINR/RSRQ/CQI computation.
-- **`mobility.py`** — Random Waypoint model with direction persistence (heading blend + noise). `UE` dataclass holds the full per-UE state including per-BS channel state (`shadow`, `ff_i`, `ff_q`, `los`, `l3_rsrp`), handover FSM state (`ttt_counter`, `ho_history`, `ping_pong_*`), and failure counters.
-- **`handover_logic.py`** — A3/A4/A5 event classification, velocity-aware TTT (`velocity_ttt(speed_ms)`), multi-factor sigmoid failure probability (`ho_failure_prob`), and ping-pong hysteresis. The main state machine is `evaluate_handover()`.
-- **`simulate.py`** — Assembles 4 BSs + 15 UEs (8 pedestrians, 7 vehicles), runs 3600-step simulation loop, emits the raw dataset. The label `handover_soon` is set to 1 if any handover occurs within the next 3 steps for that UE.
+### Features (`src/features.py`)
 
-### Feature engineering (`src/features.py`)
+- `SIGNAL_COLS` (8) × {value, lags 1–3, rolling mean/std 3 & 5 (shifted by 1), deltas 1 & 3} + `CONTEXT_COLS` (`ue_speed`, `rsrp_diff`, `cell_load_pct`) = **83 features** (`SCALE_COLS`). `pos_x`, `pos_y`, `los_flag` are raw-only, never features.
+- **`build_features(df, drop_warmup=True)`** is the single offline builder: groups by UE, sorts by timestamp, **keeps the input index**, adds `history_steps`/`warmup` (first `WARMUP_STEPS`=3 rows per UE). `engineer_features` = `build_features(...).reset_index(drop=True)`.
+- **`OnlineFeatureBuffer.push(rec)`** reproduces the same features in streaming mode (parity test).
+- Temporal 70/15/15 split; scaler fit on train only; `meta.json["feature_cols"]` is the source of truth.
 
-Key constants at module level:
-- `LAG_STEPS = [1, 2, 3]`, `ROLL_WINDOWS = [3, 5]`, `DELTA_STEPS = [1, 3]`
-- Rolling stats are **shifted by 1** to avoid look-ahead; lags are backward-only — no data leakage.
-- Applied to all 8 radio signals (raw + L3-filtered RSRP/RSRQ, SINR, CQI, neighbor RSRP/RSRQ).
-- Split is **temporal** (70/15/15, no shuffling); `StandardScaler` fit on train only.
-- `meta.json` records `feature_cols` (the canonical feature list used everywhere downstream). It is `SCALE_COLS`, which includes the simulation-only `pos_x`, `pos_y`, `los_flag`.
+### Models (`src/models.py`)
 
-### Model training (`src/models.py`)
+Seven models: LR, RF, XGBoost, LSTM, GRU, Stacking, and `RuleA3Gap` (a picklable sklearn-like class over scaled features).
 
-Six models are trained in sequence:
-| Model | Type | Key detail |
-|---|---|---|
-| `logistic_regression` | sklearn | `C=0.5, solver='saga', class_weight='balanced'` |
-| `random_forest` | sklearn | `n_estimators=300, max_depth=12`, balanced |
-| `xgboost` | XGBoost | `n_estimators=400, lr=0.05`, early stopping on val, **input must be float32** |
-| `lstm` | PyTorch | `hidden=64, layers=2, dropout=0.3`, `SEQ_LEN=10`, WeightedRandomSampler |
-| `gru` | PyTorch | Mirror of LSTM, GRU cell |
-| `stacking_ensemble` | sklearn meta-LR | Meta-features = [XGB probs, RF probs, LSTM probs] |
+- **Imbalance:** one correction per model (class_weight / scale_pos_weight / sampler only for LSTM/GRU, never also `pos_weight`).
+- **XGBoost:** early stopping on validation `aucpr`.
+- **LSTM/GRU:** checkpoint on validation PR-AUC. **Sequence scoring must go through `score_sequence_model(net, df, feat_cols)`**, which builds windows per UE and returns a Series on `df.index`.
+- **Stacking:** class-balanced meta-LR. `train_stacking` returns `(model, oof_val_f1, oof_series)`, and its validation metrics are out-of-fold.
+- **After training:** every model is scored on the validation rows with a full `SEQ_LEN` history. `tune_threshold` / `val_metrics` write `models/thresholds.json` and log to MLflow.
+- `seed_everything()` makes runs bit-for-bit reproducible.
 
-**Stacking alignment is critical:** LSTM/GRU drop the first `SEQ_LEN-1` rows per UE (insufficient look-back). XGB and RF must be restricted to the same row subset when building meta-features. This row alignment uses `_build_seq_row_indices()` from `models.py` and is replicated in `evaluate.py` and notebook 10.
+MLflow (SQLite `mlflow.db`) calls are wrapped in try/except, and run IDs are recorded before artifact logging. sklearn models are logged through `_mlf_log_sklearn`: MLflow 3 needs `serialization_format="cloudpickle"`, because skops rejects tree objects.
 
-MLflow logging is wrapped in `try/except`; if the SQLite store (`mlflow.db`) is absent the pipeline still runs. The tracking URI is `sqlite:///mlflow.db` (project root).
+### Evaluation (`src/evaluate.py`, `src/operational.py`)
 
-### Evaluation & explainability (`src/evaluate.py`, `src/explain.py`)
+- **`score_all_models(df, feat_cols)`** returns probabilities of all 7 models on `df.index`.
+- **Evaluation rows:** every model is evaluated on the same test rows (`_build_seq_row_indices`) at its validation threshold, with PR-AUC included.
+- **`operational.py`:**
+  - `event_metrics` computes event recall@3/5 s, lead time and **false-alarm time share** (time-based on purpose; an episode count rewards permanent alarms);
+  - `operating_curve`;
+  - `recall_at_false_alarm_budget`, with `FA_BUDGET` = 5 % in `evaluate.py`.
 
-- `evaluate.py` loads all 6 models and computes precision/recall/F1/ROC-AUC on the held-out test set. It then resumes each MLflow run to append test metrics + plot artifacts.
-- `explain.py` runs SHAP for LR (LinearExplainer + Independent masker), RF and XGBoost (TreeExplainer), and the Stacking Ensemble (KernelExplainer on the 3 meta-features). LSTM/GRU are excluded (DeepExplainer is too slow and noisy). SHAP 0.51 changed `TreeExplainer.shap_values()` to return a 3-D array `(n_samples, n_features, n_classes)`; the code handles both the old list format and the new ndarray.
+### Promotion (`scripts/promote_best_model.py`)
 
-### Champion model promotion (`scripts/promote_best_model.py`)
+Selects on **validation** (`0.6·val_f1_tuned + 0.4·val_roc_auc` from `thresholds.json`). The rule is not eligible; test metrics come from `reports/evaluation.json` for reporting only. Writes `metadata.json` with `display_name`, `threshold`, val/test metrics and `run_id`. A stacking champion copies its base models too.
 
-Queries MLflow for the run with the highest weighted score `0.6 × test_f1 + 0.4 × test_roc_auc`. Falls back to parsing `reports/evaluation.txt` if MLflow is unavailable. Copies the winner to `models/champion/` and writes `metadata.json`.
+### Serving (`src/serving.py`)
+
+The single inference path: `load_model(name)`, `load_champion()`, `predict_scaled(model, scaled_df, feat_cols)` and `score_measurements(raw_df, model)`. The last returns `prob`/`warmup`/`alarm` on the raw index. It's used by `predict.py`, the dashboard (`score_live`, risk tab) and `generalization.py`. Never attach scores by position.
+
+### Experiments
+
+- **`closed_loop.py`:** policies baseline / always_short / always_long / predictive / random_gate on seeds 101/202/303 × 1800 s.
+  - The predictive `hi` is the champion's validation threshold; `lo` is the 5th percentile of its validation probabilities on positives.
+  - The random gate matches the predictive override rates.
+  - Non-sklearn champions fall back to XGBoost in the loop.
+- **`generalization.py`:** champion vs rule on the 4 scenario presets and unseen seeds 1001–1003.
 
 ### Dashboard (`app/dashboard.py`)
 
-Eight-tab Streamlit app. Reads `data/processed/` CSVs, `models/` files, `reports/shap/` PNGs, and `models/champion/metadata.json`. Displays a champion banner, model-comparison table, per-UE KPI trends, handover timeline, real-time risk gauge, SHAP plots, and MLflow run table.
-
-### Notebooks (`notebooks/`)
-
-Notebooks 08–10 are analysis-only (read from already-executed pipeline outputs):
-- `08_mlflow_experiment_tracking.ipynb` — connects to `mlflow.db`, visualises all runs
-- `09_shap_explanations.ipynb` — stratified SHAP beeswarm, dependency, waterfall, temporal plots
-- `10_model_comparison.ipynb` — PR curves, calibration, threshold sweep, speed benchmark, error analysis
-
-All three must be executed with the `lte_venv` kernel (see command above).
+Nine tabs, including **Proactive HO** (closed loop + generalization JSON). The model comparison reads `reports/evaluation.json` and `operational.json`, and live prediction uses `score_live` (joins by index).
 
 ## Important implementation notes
 
-- **XGBoost requires float32 inputs** everywhere (training, eval, SHAP). Cast with `.astype(np.float32)`.
-- **macOS OpenMP segfault**: set `OMP_NUM_THREADS=1` before importing `torch` when XGBoost is also imported in the same process.
-- **`meta.json` is the source of truth** for features. Always load feature names from `data/processed/meta.json["feature_cols"]` rather than hard-coding them.
-- **`mlflow.db` and `mlruns/`** are gitignored and regenerated by the pipeline. Do not commit them.
-- **Model files (`*.pkl`, `*.pt`)** are gitignored. `data/processed/train.csv`, `val.csv`, `test.csv` are also gitignored; only `meta.json` and `data/raw/dataset.csv` are retained via DVC.
-- All pipeline configuration (signal ranges, TTT, fading params, feature lag windows, model hyperparameters) is in **module-level dataclasses and constants** in each `src/` file — there is no external YAML config.
+- **XGBoost requires float32 inputs** everywhere (`.astype(np.float32)`).
+- **macOS OpenMP:** set `OMP_NUM_THREADS=1` before importing torch when XGBoost is also loaded.
+- **Git-tracked vs generated:**
+  - `reports/*.json`, `models/thresholds.json`, `models/champion/metadata.json` and `dvc.lock` are git-tracked (`cache: false` outputs);
+  - CSVs, `*.pkl`/`*.pt`, PNG reports, `reports/shap/` and `mlflow.db` are regenerated and ignored.
+  - There is no DVC remote: data is reproducible from the seeded simulator.
+- **Commits:** do not add Claude co-author / attribution lines (author's preference).
+- All configuration lives in module-level dataclasses/constants (`RadioConfig`, `HOConfig`, `MobilityConfig`, feature constants, model hyperparameters); there is no YAML config.
+- `docs/cours/` is a French course built on this project. Keep its numbers in sync with `reports/*.json` when results change.

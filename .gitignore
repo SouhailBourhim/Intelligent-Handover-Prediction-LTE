@@ -64,3 +64,8 @@ tmp/
 
 # ── Project archives ───────────────────────────────────────────────────────────
 *.zip
+# evaluate stage outputs (JSON summaries are committed, plots are regenerated)
+reports/pr_curves.png
+# course PDF build intermediates
+docs/cours/_cours.html
+docs/cours/_build/
