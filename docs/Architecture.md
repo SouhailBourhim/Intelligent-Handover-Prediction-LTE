@@ -4,56 +4,79 @@
 
 ```mermaid
 flowchart LR
-    SIM["simulate.py<br/>radio · mobility · HO logic"] --> RAW[("data/raw/dataset.csv")]
+    SIM["src/simulator.py<br/>radio · mobility · HO logic"] --> RAW[("data/raw/dataset.csv")]
     RAW --> FE["features.py"] --> PROC[("data/processed/")]
-    PROC --> TR["models.py"] --> MOD[("models/")]
-    MOD --> EV["evaluate.py"] --> MLF[("MLflow · reports/")]
-    MOD --> EX["explain.py"] --> MLF
-    MLF --> PRO["promote_best_model.py"] --> CH[("models/champion/")]
-    CH --> PRED["predict.py"]
-    CH --> DASH["app/dashboard.py"]
+    PROC --> TR["models.py"] --> MOD[("models/ + thresholds.json")]
+    MOD --> EV["evaluate.py<br/>+ operational.py"] --> REP[("reports/*.json · MLflow")]
+    MOD --> EX["explain.py"] --> REP
+    MOD --> PRO["promote_best_model.py<br/>(validation)"] --> CH[("models/champion/")]
+    CH --> SERV["serving.py"]
+    SERV --> PRED["predict.py"]
+    SERV --> DASH["app/dashboard.py"]
+    SERV --> GEN["generalization.py"]
+    CH --> CL["closed_loop.py"]
+    CL -. "TTT policy" .-> SIM
 ```
 
 A more detailed diagram, plus the handover state machine, feature and stacking diagrams, is in the [README](../README.md#system-architecture).
 
 ## Module responsibilities
 
-### Simulation layer (`src/` + standalone scripts)
+### Simulation layer
 
 | Module | Responsibility |
 |--------|---------------|
-| `radio_model.py` | 3GPP UMa LOS/NLOS path loss, Gudmundson AR(1) shadow fading, AR(1) complex Gaussian fast fading, L3 EMA filter, SINR/RSRQ/CQI computation |
-| `mobility.py` | Random Waypoint model with direction persistence; `UE` dataclass holds full per-UE state (position, channel, HO FSM) |
-| `handover_logic.py` | A3/A4/A5 event classification, velocity-aware TTT, multi-factor HO failure sigmoid, ping-pong hysteresis |
-| `simulate.py` | Assembles the full 15-UE / 1800-step training dataset (`data/raw/dataset.csv`) |
-| `generate_test_dataset.py` | Standalone script — generates smaller CSVs for dashboard live-prediction and `predict.py` testing; 4 scenario presets (`default`, `vehicle`, `stable`, `cell_edge`); pre-generated samples in `data/test_scenarios/` |
+| `src/simulator.py` | Shared step loop (measure → optional TTT policy → decide), two RNG streams (channel vs HO failure), RLF countdown and RRC re-establishment, `handover_soon` label, `make_simulator` |
+| `src/radio_model.py` | UMa LOS/NLOS path loss, spatially consistent LOS, Gudmundson shadowing, measurement-averaged fast fading, **per-RE RSRP** with 3GPP reporting range, SINR (noise per RE), RSRQ, CQI |
+| `src/mobility.py` | Random Waypoint with direction persistence; new cruise speed per leg; `current_speed` = actual speed |
+| `src/handover_logic.py` | L3 filter, A3 + velocity-aware TTT (overridable per step), A3/A4/A5 tag, multi-factor failure probability, ping-pong hysteresis |
+| `simulate.py` | Training run: 8 pedestrians + 7 vehicles, 3,600 s, seed 42 → `data/raw/dataset.csv` |
+| `generate_test_dataset.py` | Scenario presets (`default`, `vehicle`, `stable`, `cell_edge`) on the shared engine; samples in `data/test_scenarios/` |
 
 ### Pipeline layer
 
 | Module | Phase | Responsibility |
 |--------|-------|---------------|
-| `src/features.py` | 2 | Load + clean raw CSV, engineer lag/rolling/delta features per UE, 70/15/15 temporal split, StandardScaler |
-| `src/models.py` | 3 | Train LR, RF, XGBoost, LSTM, GRU, Stacking Ensemble; log hyperparams + val F1 to MLflow |
-| `src/evaluate.py` | 4 | Load all 6 models, score test set, log metrics + plots to MLflow, write `reports/evaluation.txt` |
-| `src/explain.py` | 5 | SHAP values for LR (LinearExplainer), RF, XGBoost (TreeExplainer); bar, beeswarm, waterfall plots |
+| `src/features.py` | 2 | `build_features` (per UE, index-preserving, warm-up flags), 83 observable features, temporal 70/15/15 split, scaler on train; `OnlineFeatureBuffer` for streaming |
+| `src/models.py` | 3 | 6 learned models + rule baseline; one imbalance correction per model; PR-AUC early stopping; out-of-fold stacking; validation thresholds and metrics → `models/thresholds.json`; `score_sequence_model` (per-UE windows) |
+| `src/evaluate.py` | 4 | Same test rows for every model; P/R/F1 at tuned threshold and 0.5, ROC-AUC, PR-AUC; ROC/PR/confusion plots; `evaluation.json` |
+| `src/operational.py` | 4 | Event recall@3/5 s, lead time, false-alarm time share, operating curves, recall at a false-alarm budget → `operational.json` |
+| `src/explain.py` | 5 | SHAP for LR, RF, XGBoost and the stacking meta-model |
 
-### MLOps layer
+### Experiments
+
+| Module | Responsibility |
+|--------|---------------|
+| `src/closed_loop.py` | Champion inside the simulator's HO loop; predictive TTT policy vs baseline, always-short, always-long and a rate-matched random gate on unseen seeds |
+| `src/generalization.py` | Champion vs rule on the 4 scenario presets and 3 unseen seeds through the serving path |
+
+### Serving and MLOps
 
 | Component | Role |
 |-----------|------|
-| `mlflow.db` | SQLite MLflow tracking store — experiment runs, metrics, hyperparams, artifact paths |
-| `dvc.yaml` | Five-stage reproducible pipeline: simulate → features → train → evaluate → explain |
-| `.github/workflows/ci.yml` | GitHub Actions — runs `dvc repro` end-to-end on every push to `main` |
-| `scripts/promote_best_model.py` | Queries MLflow for the highest `0.6 × F1 + 0.4 × AUC`, copies winner to `models/champion/` |
-| `predict.py` | CLI inference entry point — loads champion model, handles sklearn/PyTorch/stacking; expects engineered feature columns in its input (the dashboard Live Prediction tab engineers its own) |
-| `app/dashboard.py` | Eight-tab Streamlit app — KPI charts, HO timeline, risk gauge, 🔮 Live Prediction, model comparison, SHAP, MLflow, mobility map |
+| `src/serving.py` | Single inference path: raw measurements → `build_features` → scaler → model → scores joined **by index**; warm-up rows not scored |
+| `predict.py` | CLI on raw measurement CSVs / JSON rows, champion's tuned threshold by default |
+| `app/dashboard.py` | Nine-tab Streamlit app (KPIs, HO timeline, risk, live prediction, model comparison with event metrics, SHAP, MLflow, mobility map, Proactive HO) |
+| `scripts/promote_best_model.py` | Champion = max `0.6·val_F1 + 0.4·val_AUC` (validation only) → `models/champion/` |
+| `dvc.yaml` | 8 stages: simulate → features → train → evaluate → explain → promote → generalize → closed_loop |
+| `.github/workflows/ci.yml` | `tests` job (pytest) then `pipeline` job (`dvc repro`), reports uploaded as artifacts |
+| `tests/` | 36 pytest tests: physics, HO logic, determinism, leakage, parity, serving invariances, event metrics |
+| `mlflow.db` | SQLite tracking store; validation metrics at training, test metrics appended at evaluation |
 
 ## Key design decisions
 
-**Stacking row alignment** — LSTM/GRU drop the first `SEQ_LEN−1` rows per UE (no look-back history). The helper `_build_seq_row_indices()` returns the exact row indices that were scored by LSTM so XGBoost and RF can be restricted to the same subset when constructing stacking meta-features. This alignment is applied consistently in `models.py`, `evaluate.py`, and `predict.py`.
+**Two RNG streams in the simulator.** Mobility and channel randomness is separate from handover-failure draws. A TTT policy therefore changes decisions but never trajectories or fading, so the closed-loop comparison is paired (tested in `test_simulator.py`).
 
-**L3 filter separation** — Raw RSRP and L3-filtered RSRP are both included as features. The handover state machine uses the L3 value; the ML models learn from both, allowing them to detect the difference between instantaneous dips and sustained degradation.
+**Index-preserving features, one serving path.** `build_features` and `score_sequence_model` return results on the caller's index. Training, `predict.py`, the dashboard and the generalization study all go through `src/serving.py`. This fixed v3's 0-of-1500 `predict.py` bug and the dashboard row-misalignment bug, and `test_serving.py` guards both.
 
-**MLflow optional** — All MLflow calls in `models.py` and `evaluate.py` are wrapped in `try/except`. The pipeline runs and produces correct outputs even if MLflow is not installed.
+**Same rows for every model.** LSTM/GRU need a full `SEQ_LEN` window. Selection on validation and evaluation on test both use the rows that have one (`_build_seq_row_indices`), so all seven models are compared on identical data.
 
-**XGBoost float32** — All inputs to XGBoost are explicitly cast to `float32` to maintain compatibility across XGBoost 2.x and 3.x.
+**Validation-only selection.** Thresholds (class-weighted models aren't calibrated) and the champion come from validation; the test split is read once. The stacking meta-model is trained on validation, so its validation score is out-of-fold.
+
+**Time-based false-alarm cost.** A per-episode count rewards permanent alarms, so false alarms are measured as a share of time.
+
+**L3 filter separation.** Raw and L3-filtered RSRP are both features. The handover state machine uses L3; the models see both, which separates instantaneous dips from sustained degradation.
+
+**MLflow optional.** All MLflow calls are wrapped in `try/except`, and run IDs are recorded before artifact logging. sklearn models are logged with cloudpickle serialization (MLflow 3's skops default rejects tree objects).
+
+**XGBoost float32.** All XGBoost inputs are cast to `float32`.
