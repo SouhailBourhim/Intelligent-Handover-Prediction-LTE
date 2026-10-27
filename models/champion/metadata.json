@@ -1,11 +1,17 @@
 {
   "model_name": "xgboost",
-  "run_id": null,
-  "test_roc_auc": 0.9188,
-  "test_f1": 0.5503,
-  "champion_score": 0.6977,
-  "promotion_criterion": "0.6*F1 + 0.4*AUC",
-  "promoted_at": "2026-08-28T22:01:30.140085+00:00",
+  "display_name": "XGBoost",
+  "run_id": "81cc7f2197df4841b0674d1f1b63bd85",
+  "threshold": 0.8,
+  "val_f1": 0.5024,
+  "val_roc_auc": 0.9269,
+  "val_pr_auc": 0.4706,
+  "champion_score": 0.6722,
+  "test_f1": 0.4972,
+  "test_roc_auc": 0.921,
+  "test_pr_auc": 0.4306,
+  "promotion_criterion": "0.6*val_F1 + 0.4*val_AUC",
+  "promoted_at": "2026-10-27T03:34:55.803865+00:00",
   "model_files": [
     "xgboost.pkl"
   ]

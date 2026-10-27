@@ -1,0 +1,51 @@
+{
+  "Logistic Regression": {
+    "threshold": 0.78,
+    "val_f1_tuned": 0.4565,
+    "val_f1_0.5": 0.3905,
+    "val_roc_auc": 0.9088,
+    "val_pr_auc": 0.3224
+  },
+  "Random Forest": {
+    "threshold": 0.6,
+    "val_f1_tuned": 0.5,
+    "val_f1_0.5": 0.4852,
+    "val_roc_auc": 0.9231,
+    "val_pr_auc": 0.4341
+  },
+  "XGBoost": {
+    "threshold": 0.8,
+    "val_f1_tuned": 0.5024,
+    "val_f1_0.5": 0.4565,
+    "val_roc_auc": 0.9269,
+    "val_pr_auc": 0.4706
+  },
+  "LSTM": {
+    "threshold": 0.82,
+    "val_f1_tuned": 0.4699,
+    "val_f1_0.5": 0.3966,
+    "val_roc_auc": 0.9053,
+    "val_pr_auc": 0.3878
+  },
+  "GRU": {
+    "threshold": 0.81,
+    "val_f1_tuned": 0.479,
+    "val_f1_0.5": 0.3945,
+    "val_roc_auc": 0.9148,
+    "val_pr_auc": 0.4112
+  },
+  "Stacking Ensemble": {
+    "threshold": 0.89,
+    "val_f1_tuned": 0.5016,
+    "val_f1_0.5": 0.4291,
+    "val_roc_auc": 0.92,
+    "val_pr_auc": 0.4319
+  },
+  "Rule (A3 gap)": {
+    "threshold": 0.16,
+    "val_f1_tuned": 0.4092,
+    "val_f1_0.5": 0.3318,
+    "val_roc_auc": 0.8559,
+    "val_pr_auc": 0.2357
+  }
+}

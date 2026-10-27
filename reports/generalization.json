@@ -1,0 +1,161 @@
+{
+  "champion": "XGBoost",
+  "n_steps": 1800,
+  "rows": [
+    {
+      "dataset": "scenario: default",
+      "model": "XGBoost",
+      "rows": 14376,
+      "pos_rate": 0.0719,
+      "roc_auc": 0.9314,
+      "pr_auc": 0.4818,
+      "f1": 0.533,
+      "event_recall@3s": 0.9244,
+      "false_alarm_time_share": 0.0566
+    },
+    {
+      "dataset": "scenario: default",
+      "model": "Rule (A3 gap)",
+      "rows": 14376,
+      "pos_rate": 0.0719,
+      "roc_auc": 0.8847,
+      "pr_auc": 0.3059,
+      "f1": 0.4572,
+      "event_recall@3s": 0.8992,
+      "false_alarm_time_share": 0.0762
+    },
+    {
+      "dataset": "scenario: vehicle",
+      "model": "XGBoost",
+      "rows": 14376,
+      "pos_rate": 0.1167,
+      "roc_auc": 0.873,
+      "pr_auc": 0.4286,
+      "f1": 0.4949,
+      "event_recall@3s": 0.9144,
+      "false_alarm_time_share": 0.0976
+    },
+    {
+      "dataset": "scenario: vehicle",
+      "model": "Rule (A3 gap)",
+      "rows": 14376,
+      "pos_rate": 0.1167,
+      "roc_auc": 0.8372,
+      "pr_auc": 0.3096,
+      "f1": 0.4429,
+      "event_recall@3s": 0.8613,
+      "false_alarm_time_share": 0.1024
+    },
+    {
+      "dataset": "scenario: stable",
+      "model": "XGBoost",
+      "rows": 14376,
+      "pos_rate": 0.015,
+      "roc_auc": 0.9772,
+      "pr_auc": 0.4487,
+      "f1": 0.5092,
+      "event_recall@3s": 0.9306,
+      "false_alarm_time_share": 0.0133
+    },
+    {
+      "dataset": "scenario: stable",
+      "model": "Rule (A3 gap)",
+      "rows": 14376,
+      "pos_rate": 0.015,
+      "roc_auc": 0.9691,
+      "pr_auc": 0.3218,
+      "f1": 0.3407,
+      "event_recall@3s": 1.0,
+      "false_alarm_time_share": 0.05
+    },
+    {
+      "dataset": "scenario: cell_edge",
+      "model": "XGBoost",
+      "rows": 14376,
+      "pos_rate": 0.0828,
+      "roc_auc": 0.908,
+      "pr_auc": 0.4437,
+      "f1": 0.5005,
+      "event_recall@3s": 0.91,
+      "false_alarm_time_share": 0.0723
+    },
+    {
+      "dataset": "scenario: cell_edge",
+      "model": "Rule (A3 gap)",
+      "rows": 14376,
+      "pos_rate": 0.0828,
+      "roc_auc": 0.8604,
+      "pr_auc": 0.2784,
+      "f1": 0.4337,
+      "event_recall@3s": 0.9051,
+      "false_alarm_time_share": 0.1004
+    },
+    {
+      "dataset": "training config, seed 1001",
+      "model": "XGBoost",
+      "rows": 26955,
+      "pos_rate": 0.0707,
+      "roc_auc": 0.9288,
+      "pr_auc": 0.4521,
+      "f1": 0.5088,
+      "event_recall@3s": 0.9104,
+      "false_alarm_time_share": 0.0578
+    },
+    {
+      "dataset": "training config, seed 1001",
+      "model": "Rule (A3 gap)",
+      "rows": 26955,
+      "pos_rate": 0.0707,
+      "roc_auc": 0.8634,
+      "pr_auc": 0.2643,
+      "f1": 0.405,
+      "event_recall@3s": 0.8731,
+      "false_alarm_time_share": 0.0899
+    },
+    {
+      "dataset": "training config, seed 1002",
+      "model": "XGBoost",
+      "rows": 26955,
+      "pos_rate": 0.0654,
+      "roc_auc": 0.9292,
+      "pr_auc": 0.4279,
+      "f1": 0.4927,
+      "event_recall@3s": 0.8964,
+      "false_alarm_time_share": 0.0548
+    },
+    {
+      "dataset": "training config, seed 1002",
+      "model": "Rule (A3 gap)",
+      "rows": 26955,
+      "pos_rate": 0.0654,
+      "roc_auc": 0.8632,
+      "pr_auc": 0.2441,
+      "f1": 0.3911,
+      "event_recall@3s": 0.8689,
+      "false_alarm_time_share": 0.0861
+    },
+    {
+      "dataset": "training config, seed 1003",
+      "model": "XGBoost",
+      "rows": 26955,
+      "pos_rate": 0.0635,
+      "roc_auc": 0.9298,
+      "pr_auc": 0.43,
+      "f1": 0.5008,
+      "event_recall@3s": 0.9126,
+      "false_alarm_time_share": 0.0571
+    },
+    {
+      "dataset": "training config, seed 1003",
+      "model": "Rule (A3 gap)",
+      "rows": 26955,
+      "pos_rate": 0.0635,
+      "roc_auc": 0.8693,
+      "pr_auc": 0.2424,
+      "f1": 0.3907,
+      "event_recall@3s": 0.8403,
+      "false_alarm_time_share": 0.0835
+    }
+  ],
+  "note": "Fresh simulations; thresholds tuned on the training run's validation split."
+}

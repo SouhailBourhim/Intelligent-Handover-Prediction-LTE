@@ -5,187 +5,326 @@ stages:
     deps:
     - path: simulate.py
       hash: md5
-      md5: cf6e7a7340181512bd89edbe83172797
-      size: 15570
+      md5: 3bb4ec0ff6d141d64777152b3ee8bf63
+      size: 4522
     - path: src/handover_logic.py
       hash: md5
-      md5: 8140cd4ad9bb2ce28355e63696b4d0e9
-      size: 11642
+      md5: 1c6dab3a4184e8eb0ece2f04d0a578ef
+      size: 12557
     - path: src/mobility.py
       hash: md5
-      md5: 411e963b6e6a796ae45f26c50b0444f3
-      size: 8027
+      md5: 319cbb225e906723248859fc9e9dc535
+      size: 9078
     - path: src/radio_model.py
       hash: md5
-      md5: e703ed660f8588868bc144457acd7018
-      size: 10256
+      md5: 7e958895a7692704b5b1a411798319d1
+      size: 13148
+    - path: src/simulator.py
+      hash: md5
+      md5: e319647b4085fd1b0e3bd0a272c927c3
+      size: 12446
     outs:
     - path: data/raw/dataset.csv
       hash: md5
-      md5: d6b27ec1e3e5a1f75d7078890e489dae
-      size: 2952331
+      md5: 8dab463934f7d1760c49cae7cec38eb4
+      size: 6142258
   features:
     cmd: python run_pipeline.py --phase 2
     deps:
     - path: data/raw/dataset.csv
       hash: md5
-      md5: d6b27ec1e3e5a1f75d7078890e489dae
-      size: 2952331
+      md5: 8dab463934f7d1760c49cae7cec38eb4
+      size: 6142258
     - path: src/features.py
       hash: md5
-      md5: 2a600ffa567391ba07a31e2116002967
-      size: 9553
+      md5: a5679f6e6442284e312fbbe611e440a3
+      size: 12122
     outs:
     - path: data/processed/meta.json
       hash: md5
-      md5: 394f927706df9ceb79a6e2fd83896ca0
-      size: 2365
+      md5: 3b8be008e9aac3c78403d5624316fae5
+      size: 2418
     - path: data/processed/test.csv
       hash: md5
-      md5: 0330e70ad359beaf2ca169850e92f632
-      size: 7014176
+      md5: bfad9d769bd665826c17c15318012ec8
+      size: 13851169
     - path: data/processed/train.csv
       hash: md5
-      md5: ac3c6bbde711b95d2c4022f3b15a48f0
-      size: 32644036
+      md5: 2e908f4124bb04efeb9afc6bba8b4889
+      size: 64546991
     - path: data/processed/val.csv
       hash: md5
-      md5: 9c20a8d8017c2f711bd1b049944960ac
-      size: 7018105
+      md5: 2a795e2ab31c9bf62a1a69c664df7cfd
+      size: 13840068
     - path: models/scaler.pkl
       hash: md5
-      md5: 2b37a6493cccdf5cf42c45f7c1d06adf
-      size: 4647
+      md5: abf61a08658e8e5c242df1b970637cc5
+      size: 4943
   train:
     cmd: python run_pipeline.py --phase 3
     deps:
     - path: data/processed/meta.json
       hash: md5
-      md5: 394f927706df9ceb79a6e2fd83896ca0
-      size: 2365
+      md5: 3b8be008e9aac3c78403d5624316fae5
+      size: 2418
     - path: data/processed/train.csv
       hash: md5
-      md5: ac3c6bbde711b95d2c4022f3b15a48f0
-      size: 32644036
+      md5: 2e908f4124bb04efeb9afc6bba8b4889
+      size: 64546991
     - path: data/processed/val.csv
       hash: md5
-      md5: 9c20a8d8017c2f711bd1b049944960ac
-      size: 7018105
+      md5: 2a795e2ab31c9bf62a1a69c664df7cfd
+      size: 13840068
+    - path: models/scaler.pkl
+      hash: md5
+      md5: abf61a08658e8e5c242df1b970637cc5
+      size: 4943
     - path: src/models.py
       hash: md5
-      md5: 27a59c401d025243f197d43cf1335bf6
-      size: 23105
+      md5: d88789dbcd40479af22660ae9e133580
+      size: 32630
     outs:
     - path: models/gru.pt
       hash: md5
-      md5: 11002d62412dfac855a0dafcec511c45
-      size: 228919
+      md5: c6ecb79393ef63b2a76c95cf66a2658f
+      size: 226162
     - path: models/logistic_regression.pkl
       hash: md5
-      md5: 33ccf84cd7ec03aed37bd6471dddc6d1
+      md5: d496d2d17ae8210a989776e725a7ff2f
       size: 1615
     - path: models/lstm.pt
       hash: md5
-      md5: b449ad2725b36e582d9b850b831f8e3f
-      size: 301193
+      md5: dc705dc7f4849153e627b47831cff2ff
+      size: 297730
     - path: models/mlflow_run_ids.json
       hash: md5
-      md5: 8531bede348a702c82bedf734a6aacd1
-      size: 334
+      md5: 71c0c4907df51fcd5cd6a33ec2a8308c
+      size: 398
     - path: models/random_forest.pkl
       hash: md5
-      md5: e7397ee55703962f9ec3a56d2d19b04b
-      size: 18065641
+      md5: 3bcd3f713daaa89dac9559dbf7270785
+      size: 17296809
+    - path: models/rule_a3_gap.pkl
+      hash: md5
+      md5: f1cc04482bcfceb479b1d9477dbb23d2
+      size: 437
     - path: models/stacking_ensemble.pkl
       hash: md5
-      md5: 09e6648b999a4a5f9ea92ba3bf1a6e71
-      size: 895
+      md5: a5cc3558a1b11594a5f00d8725a698d7
+      size: 911
+    - path: models/thresholds.json
+      hash: md5
+      md5: a541a5a5a8352cd819b9dca02e018d51
+      size: 1114
     - path: models/xgboost.pkl
       hash: md5
-      md5: b6b7f7f5202315da6e950ef166255287
-      size: 1494764
+      md5: 00e74d3509ef4ea2f8804674089a5d42
+      size: 545635
   evaluate:
     cmd: python run_pipeline.py --phase 4
     deps:
     - path: data/processed/meta.json
       hash: md5
-      md5: 394f927706df9ceb79a6e2fd83896ca0
-      size: 2365
+      md5: 3b8be008e9aac3c78403d5624316fae5
+      size: 2418
     - path: data/processed/test.csv
       hash: md5
-      md5: 0330e70ad359beaf2ca169850e92f632
-      size: 7014176
+      md5: bfad9d769bd665826c17c15318012ec8
+      size: 13851169
     - path: models/gru.pt
       hash: md5
-      md5: 11002d62412dfac855a0dafcec511c45
-      size: 228919
+      md5: c6ecb79393ef63b2a76c95cf66a2658f
+      size: 226162
     - path: models/logistic_regression.pkl
       hash: md5
-      md5: 33ccf84cd7ec03aed37bd6471dddc6d1
+      md5: d496d2d17ae8210a989776e725a7ff2f
       size: 1615
     - path: models/lstm.pt
       hash: md5
-      md5: b449ad2725b36e582d9b850b831f8e3f
-      size: 301193
+      md5: dc705dc7f4849153e627b47831cff2ff
+      size: 297730
     - path: models/random_forest.pkl
       hash: md5
-      md5: e7397ee55703962f9ec3a56d2d19b04b
-      size: 18065641
+      md5: 3bcd3f713daaa89dac9559dbf7270785
+      size: 17296809
+    - path: models/rule_a3_gap.pkl
+      hash: md5
+      md5: f1cc04482bcfceb479b1d9477dbb23d2
+      size: 437
     - path: models/stacking_ensemble.pkl
       hash: md5
-      md5: 09e6648b999a4a5f9ea92ba3bf1a6e71
-      size: 895
+      md5: a5cc3558a1b11594a5f00d8725a698d7
+      size: 911
+    - path: models/thresholds.json
+      hash: md5
+      md5: a541a5a5a8352cd819b9dca02e018d51
+      size: 1114
     - path: models/xgboost.pkl
       hash: md5
-      md5: b6b7f7f5202315da6e950ef166255287
-      size: 1494764
+      md5: 00e74d3509ef4ea2f8804674089a5d42
+      size: 545635
     - path: src/evaluate.py
       hash: md5
-      md5: 9838fb71a4ac04175c8e0f65999666fe
-      size: 16774
+      md5: 923153fcfb92d041a75b7f00e6895d1f
+      size: 15754
+    - path: src/operational.py
+      hash: md5
+      md5: 91659f6e91af08fde1af0b0242ef6ea5
+      size: 3888
     outs:
     - path: reports/confusion_matrices.png
       hash: md5
-      md5: e83ca563ae25cb5ee914d2c6add5b63e
-      size: 102247
+      md5: 5f4cded93e5728bc6db2912b6bce1416
+      size: 100536
+    - path: reports/evaluation.json
+      hash: md5
+      md5: 1b7738d90d343770710a2f59fd911df7
+      size: 2422
     - path: reports/evaluation.txt
       hash: md5
-      md5: bfd1e035ca93f3ab8263a4a59411b0a1
-      size: 4807
+      md5: feb52caf0ccc3e06e8e17ccd2703ed07
+      size: 4984
+    - path: reports/operational.json
+      hash: md5
+      md5: 548b5436783431774c1a232a7f2b311a
+      size: 44758
+    - path: reports/pr_curves.png
+      hash: md5
+      md5: 972bb2fc0b01c10af60f8a9d91fe8f9c
+      size: 153464
     - path: reports/roc_curves.png
       hash: md5
-      md5: 85b97c7a1866ea4907d52daf16d146e9
-      size: 103275
+      md5: 91ba50340be87696e8b8b7b4f1ad4a2e
+      size: 118025
   explain:
     cmd: python run_pipeline.py --phase 5
     deps:
     - path: data/processed/meta.json
       hash: md5
-      md5: 394f927706df9ceb79a6e2fd83896ca0
-      size: 2365
+      md5: 3b8be008e9aac3c78403d5624316fae5
+      size: 2418
     - path: data/processed/test.csv
       hash: md5
-      md5: 0330e70ad359beaf2ca169850e92f632
-      size: 7014176
+      md5: bfad9d769bd665826c17c15318012ec8
+      size: 13851169
     - path: models/logistic_regression.pkl
       hash: md5
-      md5: 33ccf84cd7ec03aed37bd6471dddc6d1
+      md5: d496d2d17ae8210a989776e725a7ff2f
       size: 1615
+    - path: models/lstm.pt
+      hash: md5
+      md5: dc705dc7f4849153e627b47831cff2ff
+      size: 297730
     - path: models/random_forest.pkl
       hash: md5
-      md5: e7397ee55703962f9ec3a56d2d19b04b
-      size: 18065641
+      md5: 3bcd3f713daaa89dac9559dbf7270785
+      size: 17296809
+    - path: models/stacking_ensemble.pkl
+      hash: md5
+      md5: a5cc3558a1b11594a5f00d8725a698d7
+      size: 911
     - path: models/xgboost.pkl
       hash: md5
-      md5: b6b7f7f5202315da6e950ef166255287
-      size: 1494764
+      md5: 00e74d3509ef4ea2f8804674089a5d42
+      size: 545635
     - path: src/explain.py
       hash: md5
-      md5: 7ab73f44012ed67ccc27e0accef73938
-      size: 12182
+      md5: 056eacc880e4aea5cf6f930ac5ed478f
+      size: 17827
     outs:
     - path: reports/shap
       hash: md5
-      md5: 023dcdfadbbc09592a076c19356a2e21.dir
-      size: 1487578
-      nfiles: 9
+      md5: ce22e61c5ca1e11379ee720f1b82ac4f.dir
+      size: 1711242
+      nfiles: 12
+  promote:
+    cmd: python scripts/promote_best_model.py
+    deps:
+    - path: models/thresholds.json
+      hash: md5
+      md5: a541a5a5a8352cd819b9dca02e018d51
+      size: 1114
+    - path: reports/evaluation.json
+      hash: md5
+      md5: 1b7738d90d343770710a2f59fd911df7
+      size: 2422
+    - path: scripts/promote_best_model.py
+      hash: md5
+      md5: 7e76e1af365690299d665b53b9f4d8b7
+      size: 4498
+    outs:
+    - path: models/champion
+      hash: md5
+      md5: 36fb0a3f3cb5cea3d91f322e14e3967d.dir
+      size: 546094
+      nfiles: 2
+  generalize:
+    cmd: python -m src.generalization
+    deps:
+    - path: generate_test_dataset.py
+      hash: md5
+      md5: d8b2d2efc8008e817e134d2f246bae99
+      size: 9930
+    - path: models/champion
+      hash: md5
+      md5: 36fb0a3f3cb5cea3d91f322e14e3967d.dir
+      size: 546094
+      nfiles: 2
+    - path: models/scaler.pkl
+      hash: md5
+      md5: abf61a08658e8e5c242df1b970637cc5
+      size: 4943
+    - path: src/generalization.py
+      hash: md5
+      md5: b0148376e28c15b3ffc58220354c3ae4
+      size: 3803
+    - path: src/serving.py
+      hash: md5
+      md5: 3638a33701e079d1895b0d8acd5a7fd1
+      size: 5760
+    - path: src/simulator.py
+      hash: md5
+      md5: e319647b4085fd1b0e3bd0a272c927c3
+      size: 12446
+    outs:
+    - path: reports/generalization.json
+      hash: md5
+      md5: 873a22e17321c29aefa761b52a2d6359
+      size: 4104
+  closed_loop:
+    cmd: python -m src.closed_loop
+    deps:
+    - path: data/processed/val.csv
+      hash: md5
+      md5: 2a795e2ab31c9bf62a1a69c664df7cfd
+      size: 13840068
+    - path: models/champion
+      hash: md5
+      md5: 36fb0a3f3cb5cea3d91f322e14e3967d.dir
+      size: 546094
+      nfiles: 2
+    - path: models/scaler.pkl
+      hash: md5
+      md5: abf61a08658e8e5c242df1b970637cc5
+      size: 4943
+    - path: models/thresholds.json
+      hash: md5
+      md5: a541a5a5a8352cd819b9dca02e018d51
+      size: 1114
+    - path: src/closed_loop.py
+      hash: md5
+      md5: 91613519c4c4d0005540c40ba54b1668
+      size: 9393
+    - path: src/handover_logic.py
+      hash: md5
+      md5: 1c6dab3a4184e8eb0ece2f04d0a578ef
+      size: 12557
+    - path: src/simulator.py
+      hash: md5
+      md5: e319647b4085fd1b0e3bd0a272c927c3
+      size: 12446
+    outs:
+    - path: reports/closed_loop.json
+      hash: md5
+      md5: aec89e08c205b7929dc8486ca5dc2a49
+      size: 8962

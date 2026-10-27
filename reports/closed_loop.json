@@ -1,0 +1,293 @@
+{
+  "model": "XGBoost",
+  "hi": 0.8,
+  "lo": 0.168,
+  "seeds": [
+    101,
+    202,
+    303
+  ],
+  "n_steps": 1800,
+  "policies": {
+    "baseline": {
+      "ho_attempts_per_ue_hour": {
+        "mean": 104.1778,
+        "std": 0.9818
+      },
+      "ho_failure_rate": {
+        "mean": 0.1492,
+        "std": 0.0156
+      },
+      "ping_pong_rate": {
+        "mean": 0.2171,
+        "std": 0.0077
+      },
+      "rlf_seconds_per_ue_hour": {
+        "mean": 62.0889,
+        "std": 7.0321
+      },
+      "mean_sinr_at_ho_db": {
+        "mean": -6.2416,
+        "std": 0.2562
+      },
+      "outage_share": {
+        "mean": 0.0391,
+        "std": 0.0025
+      }
+    },
+    "always_short": {
+      "ho_attempts_per_ue_hour": {
+        "mean": 135.7333,
+        "std": 3.1156
+      },
+      "ho_failure_rate": {
+        "mean": 0.1097,
+        "std": 0.0081
+      },
+      "ping_pong_rate": {
+        "mean": 0.2984,
+        "std": 0.0105
+      },
+      "rlf_seconds_per_ue_hour": {
+        "mean": 59.5556,
+        "std": 4.6968
+      },
+      "mean_sinr_at_ho_db": {
+        "mean": -4.0042,
+        "std": 0.1897
+      },
+      "outage_share": {
+        "mean": 0.0251,
+        "std": 0.0008
+      }
+    },
+    "always_long": {
+      "ho_attempts_per_ue_hour": {
+        "mean": 66.4444,
+        "std": 0.7249
+      },
+      "ho_failure_rate": {
+        "mean": 0.2226,
+        "std": 0.0122
+      },
+      "ping_pong_rate": {
+        "mean": 0.0749,
+        "std": 0.0038
+      },
+      "rlf_seconds_per_ue_hour": {
+        "mean": 59.0667,
+        "std": 3.9298
+      },
+      "mean_sinr_at_ho_db": {
+        "mean": -10.1344,
+        "std": 0.1173
+      },
+      "outage_share": {
+        "mean": 0.0686,
+        "std": 0.0013
+      }
+    },
+    "predictive": {
+      "ho_attempts_per_ue_hour": {
+        "mean": 132.4889,
+        "std": 1.8097
+      },
+      "ho_failure_rate": {
+        "mean": 0.1048,
+        "std": 0.0107
+      },
+      "ping_pong_rate": {
+        "mean": 0.2935,
+        "std": 0.0102
+      },
+      "rlf_seconds_per_ue_hour": {
+        "mean": 55.4667,
+        "std": 5.2797
+      },
+      "mean_sinr_at_ho_db": {
+        "mean": -4.0793,
+        "std": 0.1254
+      },
+      "outage_share": {
+        "mean": 0.0258,
+        "std": 0.0003
+      }
+    },
+    "random_gate": {
+      "ho_attempts_per_ue_hour": {
+        "mean": 106.4889,
+        "std": 0.88
+      },
+      "ho_failure_rate": {
+        "mean": 0.1424,
+        "std": 0.0168
+      },
+      "ping_pong_rate": {
+        "mean": 0.2301,
+        "std": 0.0081
+      },
+      "rlf_seconds_per_ue_hour": {
+        "mean": 60.5778,
+        "std": 7.0489
+      },
+      "mean_sinr_at_ho_db": {
+        "mean": -5.9323,
+        "std": 0.1726
+      },
+      "outage_share": {
+        "mean": 0.0374,
+        "std": 0.0019
+      }
+    }
+  },
+  "per_seed": [
+    {
+      "seed": 101,
+      "rates": {
+        "short_rate": 0.09466666666666666,
+        "hold_rate_when_a3": 0.05077860528097495
+      },
+      "kpis": {
+        "baseline": {
+          "ho_attempts_per_ue_hour": 104.26666666666667,
+          "ho_failure_rate": 0.13171355498721227,
+          "ping_pong_rate": 0.22385861561119294,
+          "rlf_seconds_per_ue_hour": 54.53333333333333,
+          "mean_sinr_at_ho_db": -6.490626598465473,
+          "outage_share": 0.04055555555555555
+        },
+        "always_short": {
+          "ho_attempts_per_ue_hour": 138.13333333333333,
+          "ho_failure_rate": 0.10038610038610038,
+          "ping_pong_rate": 0.30472103004291845,
+          "rlf_seconds_per_ue_hour": 55.46666666666667,
+          "mean_sinr_at_ho_db": -4.230057915057915,
+          "outage_share": 0.02585185185185185
+        },
+        "always_long": {
+          "ho_attempts_per_ue_hour": 65.86666666666666,
+          "ho_failure_rate": 0.21862348178137653,
+          "ping_pong_rate": 0.06994818652849741,
+          "rlf_seconds_per_ue_hour": 57.2,
+          "mean_sinr_at_ho_db": -10.300182186234817,
+          "outage_share": 0.06974074074074074
+        },
+        "predictive": {
+          "ho_attempts_per_ue_hour": 134.53333333333333,
+          "ho_failure_rate": 0.09018830525272548,
+          "ping_pong_rate": 0.30718954248366015,
+          "rlf_seconds_per_ue_hour": 48.53333333333333,
+          "mean_sinr_at_ho_db": -4.153409316154608,
+          "outage_share": 0.025407407407407406
+        },
+        "random_gate": {
+          "ho_attempts_per_ue_hour": 107.46666666666667,
+          "ho_failure_rate": 0.1228287841191067,
+          "ping_pong_rate": 0.23903818953323905,
+          "rlf_seconds_per_ue_hour": 52.8,
+          "mean_sinr_at_ho_db": -6.1354590570719605,
+          "outage_share": 0.03822222222222222
+        }
+      }
+    },
+    {
+      "seed": 202,
+      "rates": {
+        "short_rate": 0.09492592592592593,
+        "hold_rate_when_a3": 0.0736156351791531
+      },
+      "kpis": {
+        "baseline": {
+          "ho_attempts_per_ue_hour": 105.33333333333333,
+          "ho_failure_rate": 0.16962025316455695,
+          "ping_pong_rate": 0.22103658536585366,
+          "rlf_seconds_per_ue_hour": 71.46666666666667,
+          "mean_sinr_at_ho_db": -6.344987341772152,
+          "outage_share": 0.04125925925925926
+        },
+        "always_short": {
+          "ho_attempts_per_ue_hour": 137.73333333333332,
+          "ho_failure_rate": 0.12003872216844143,
+          "ping_pong_rate": 0.3069306930693069,
+          "rlf_seconds_per_ue_hour": 66.13333333333334,
+          "mean_sinr_at_ho_db": -3.765972894482091,
+          "outage_share": 0.025444444444444443
+        },
+        "always_long": {
+          "ho_attempts_per_ue_hour": 67.46666666666667,
+          "ho_failure_rate": 0.2391304347826087,
+          "ping_pong_rate": 0.07532467532467532,
+          "rlf_seconds_per_ue_hour": 64.53333333333333,
+          "mean_sinr_at_ho_db": -10.045256916996047,
+          "outage_share": 0.06925925925925926
+        },
+        "predictive": {
+          "ho_attempts_per_ue_hour": 132.8,
+          "ho_failure_rate": 0.11546184738955824,
+          "ping_pong_rate": 0.282633371169126,
+          "rlf_seconds_per_ue_hour": 61.333333333333336,
+          "mean_sinr_at_ho_db": -3.9027108433734945,
+          "outage_share": 0.026074074074074072
+        },
+        "random_gate": {
+          "ho_attempts_per_ue_hour": 106.66666666666667,
+          "ho_failure_rate": 0.16375,
+          "ping_pong_rate": 0.23168908819133036,
+          "rlf_seconds_per_ue_hour": 69.86666666666666,
+          "mean_sinr_at_ho_db": -5.9478625,
+          "outage_share": 0.039185185185185184
+        }
+      }
+    },
+    {
+      "seed": 303,
+      "rates": {
+        "short_rate": 0.09396296296296296,
+        "hold_rate_when_a3": 0.060503059143439834
+      },
+      "kpis": {
+        "baseline": {
+          "ho_attempts_per_ue_hour": 102.93333333333334,
+          "ho_failure_rate": 0.14637305699481865,
+          "ping_pong_rate": 0.20637329286798178,
+          "rlf_seconds_per_ue_hour": 60.266666666666666,
+          "mean_sinr_at_ho_db": -5.889093264248705,
+          "outage_share": 0.03559259259259259
+        },
+        "always_short": {
+          "ho_attempts_per_ue_hour": 131.33333333333334,
+          "ho_failure_rate": 0.10862944162436548,
+          "ping_pong_rate": 0.2835990888382688,
+          "rlf_seconds_per_ue_hour": 57.06666666666667,
+          "mean_sinr_at_ho_db": -4.016659898477157,
+          "outage_share": 0.024074074074074074
+        },
+        "always_long": {
+          "ho_attempts_per_ue_hour": 66.0,
+          "ho_failure_rate": 0.2101010101010101,
+          "ping_pong_rate": 0.0792838874680307,
+          "rlf_seconds_per_ue_hour": 55.46666666666667,
+          "mean_sinr_at_ho_db": -10.057737373737373,
+          "outage_share": 0.06677777777777778
+        },
+        "predictive": {
+          "ho_attempts_per_ue_hour": 130.13333333333333,
+          "ho_failure_rate": 0.10860655737704918,
+          "ping_pong_rate": 0.2908045977011494,
+          "rlf_seconds_per_ue_hour": 56.53333333333333,
+          "mean_sinr_at_ho_db": -4.181782786885246,
+          "outage_share": 0.025777777777777778
+        },
+        "random_gate": {
+          "ho_attempts_per_ue_hour": 105.33333333333333,
+          "ho_failure_rate": 0.14050632911392405,
+          "ping_pong_rate": 0.21944035346097202,
+          "rlf_seconds_per_ue_hour": 59.06666666666667,
+          "mean_sinr_at_ho_db": -5.7136075949367084,
+          "outage_share": 0.03485185185185185
+        }
+      }
+    }
+  ],
+  "note": "Unseen seeds; mobility and fading identical across policies. The model was trained on baseline-policy data, so policies that change handover timing shift its input distribution slightly."
+}
