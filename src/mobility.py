@@ -1,7 +1,9 @@
 """
-UE mobility model — LTE handover simulation (v3)
+UE mobility model — LTE handover simulation (v4)
 
 Model: Random Waypoint (RWP) with direction persistence and optional pauses.
+v4: a new speed is drawn for every waypoint leg, and `current_speed` is the
+distance actually travelled in the last step (0 while paused).
 
 Behaviour
 ---------
@@ -67,10 +69,15 @@ class UE:
     ue_id:       int
     x:           float
     y:           float
-    speed:       float           # m/s
+    speed:       float           # cruise speed of the current leg (m/s)
     heading:     float           # radians
     is_vehicle:  bool
     serving_cell: int
+
+    # Speed range a new leg's cruise speed is drawn from; (0, 0) keeps `speed`
+    speed_range: Tuple[float, float] = (0.0, 0.0)
+    # Distance travelled in the last step / dt — what a real UE's speed is
+    current_speed: float = 0.0
 
     # Waypoint state
     wp_x:             float = 0.0
@@ -82,6 +89,7 @@ class UE:
     ff_i:   Dict[int, float] = field(default_factory=dict)   # fast fading I component
     ff_q:   Dict[int, float] = field(default_factory=dict)   # fast fading Q component
     los:    Dict[int, bool]  = field(default_factory=dict)   # LOS state per BS
+    los_z:  Dict[int, float] = field(default_factory=dict)   # latent LOS process
 
     # L3 measurement filter (EMA) — keyed by bs_id
     l3_rsrp: Dict[int, float] = field(default_factory=dict)
@@ -110,6 +118,11 @@ class UE:
 
         Returns the distance travelled in metres (0 during a pause).
         """
+        traveled = self._step(rng, cfg)
+        self.current_speed = traveled / cfg.dt
+        return traveled
+
+    def _step(self, rng: np.random.Generator, cfg: MobilityConfig) -> float:
         if self.pause_remaining > 0:
             self.pause_remaining -= 1
             return 0.0
@@ -129,10 +142,13 @@ class UE:
             if not self.is_vehicle and cfg.ped_pause_max_s > 0:
                 self.pause_remaining = int(rng.integers(0, cfg.ped_pause_max_s + 1))
 
-            # Pick next waypoint
+            # Pick next waypoint and the cruise speed for that leg
             self.wp_x, self.wp_y = _sample_waypoint(
                 self.x, self.y, self.is_vehicle, rng, cfg
             )
+            lo, hi = self.speed_range
+            if hi > 0:
+                self.speed = float(rng.uniform(lo, hi))
         else:
             # ── Move toward waypoint ─────────────────────────────────────────
             target_heading = math.atan2(dy_wp, dx_wp)

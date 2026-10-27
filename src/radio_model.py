@@ -1,12 +1,15 @@
 """
-Radio propagation model — LTE handover simulation (v3)
+Radio propagation model — LTE handover simulation (v4)
 
 Models implemented:
   Path loss  : 3GPP TR 36.873 UMa LOS and NLOS closed-form at 2 GHz
-  LOS/NLOS   : 3GPP TR 36.873 distance-dependent probability; persistent state
+  LOS/NLOS   : 3GPP TR 36.873 distance-dependent probability, spatially
+               consistent (latent AR(1) process, 50 m decorrelation, TR 38.901)
+  RSRP       : reference-signal power per resource element (TS 36.214), i.e.
+               Tx power spread over 600 subcarriers; reported in [−140, −44] dBm
   Shadow     : Gudmundson AR(1) spatial correlation; σ_LOS=4 dB, σ_NLOS=6 dB
-  Fast fading: AR(1) complex Gaussian (Rayleigh NLOS / Rician LOS), spatially
-               correlated over decorrelation distance ~2 m (few wavelengths)
+  Fast fading: Rayleigh (NLOS) / Rician K=5 dB (LOS), power-averaged over the
+               1 s measurement (one independent sample per λ/2 travelled)
   SINR       : S / (Σ active-cell interference × load-fraction + thermal noise)
   RSRQ       : 3GPP TS 36.214 approximation
   CQI        : 3GPP TS 36.213 15-level mapping table
@@ -26,21 +29,26 @@ import numpy as np
 @dataclass
 class RadioConfig:
     carrier_freq_ghz: float = 2.0           # LTE Band 7
-    tx_power_dbm:     float = 46.0          # eNB Tx power
-    thermal_noise_dbm: float = -107.0       # kTB for 10 MHz LTE bandwidth
+    tx_power_dbm:     float = 46.0          # eNB total Tx power (10 MHz)
+    n_subcarriers:    int   = 600           # 50 PRB × 12 subcarriers (10 MHz)
+    thermal_noise_dbm: float = -107.0       # noise over the 10 MHz bandwidth
 
+    # 3GPP TS 36.133 RSRP reporting range
     min_rsrp: float = -140.0
-    max_rsrp: float = -25.0
+    max_rsrp: float = -44.0
+
+    # LOS state spatial consistency (TR 38.901 UMa: 50 m)
+    los_decorr_m: float = 50.0
 
     # Shadow fading (Gudmundson AR-1)
     shadow_decorr_m:    float = 100.0       # spatial decorrelation distance
     shadow_sigma_los:   float = 4.0         # dB — 3GPP UMa LOS std dev
     shadow_sigma_nlos:  float = 6.0         # dB — 3GPP UMa NLOS std dev
 
-    # Fast fading (AR-1 complex Gaussian)
-    # Values represent 1-second averaged small-scale fading (not instantaneous).
-    # Realistic range for measurement-averaged fast fading: ±4 dB.
-    fast_decorr_m:  float = 3.0             # spatial decorr (few wavelengths @ 2 GHz)
+    # Fast fading, averaged over the 1 s measurement period.  Samples are
+    # independent every half wavelength (λ/2 = 7.5 cm at 2 GHz), so a moving UE
+    # averages many of them and the residual fading shrinks with speed.
+    ff_max_samples: int   = 200             # cap on averaged samples per step
     ff_min_db:      float = -8.0            # deep fade floor (averaged over 1 s)
     ff_max_db:      float = 3.0             # max fast fading gain
     rician_k_db:    float = 5.0             # Rician K-factor for LOS links
@@ -49,14 +57,24 @@ class RadioConfig:
     load_idle_frac: float = 0.10            # fraction of interference when cell idle
     cell_capacity:  int   = 10              # UEs → 100 % load
 
+    @property
+    def re_offset_db(self) -> float:
+        """dB from total power to power per resource element (≈ 27.8 dB)."""
+        return 10.0 * math.log10(self.n_subcarriers)
+
+    @property
+    def rs_power_dbm(self) -> float:
+        """Reference-signal power per resource element (≈ 18.2 dBm)."""
+        return self.tx_power_dbm - self.re_offset_db
+
+    @property
+    def noise_re_dbm(self) -> float:
+        """Thermal noise per resource element (same SINR as wideband)."""
+        return self.thermal_noise_dbm - self.re_offset_db
+
 
 # Module-level default instance
 RADIO = RadioConfig()
-
-# Normalisation constant: E[r] for I,Q ~ N(0, 0.5) each
-# r = sqrt(I² + Q²) follows Rayleigh with parameter σ_R = 1/√2
-# E[r] = σ_R × √(π/2) = (1/√2) × √(π/2) = √(π/4)
-_RAYLEIGH_E_AMP = math.sqrt(math.pi / 4.0)   # ≈ 0.8862
 
 
 # ── LOS probability ────────────────────────────────────────────────────────────
@@ -106,14 +124,26 @@ def path_loss(d_m: float, is_los: bool, fc_ghz: float = 2.0) -> float:
 
 def compute_rsrp(d_m: float, is_los: bool,
                  shadow_db: float, fast_fade_db: float,
-                 cfg: RadioConfig = RADIO) -> float:
+                 cfg: RadioConfig = RADIO, report: bool = True) -> float:
     """
-    RSRP = Tx_power − PL(d, LOS/NLOS) + shadow_db + fast_fade_db
-    Clamped to [min_rsrp, max_rsrp].
+    RSRP = RS_power_per_RE − PL(d, LOS/NLOS) + shadow_db + fast_fade_db
+
+    RSRP is the power of one reference-signal resource element, not the total
+    cell power, hence RS_power_per_RE = Tx − 10·log10(600) ≈ 18.2 dBm.
+
+    report=True clamps to the 3GPP reporting range [min_rsrp, max_rsrp].
+    report=False only applies the −140 dBm floor: the simulator uses this
+    physical value internally (L3 filter, SINR, HO logic) and clamps only
+    when writing the dataset.
     """
     pl   = path_loss(d_m, is_los, cfg.carrier_freq_ghz)
-    rsrp = cfg.tx_power_dbm - pl + shadow_db + fast_fade_db
-    return float(np.clip(rsrp, cfg.min_rsrp, cfg.max_rsrp))
+    rsrp = cfg.rs_power_dbm - pl + shadow_db + fast_fade_db
+    return report_rsrp(rsrp, cfg) if report else float(max(rsrp, cfg.min_rsrp))
+
+
+def report_rsrp(rsrp_dbm: float, cfg: RadioConfig = RADIO) -> float:
+    """Clamp an RSRP value to the UE reporting range (TS 36.133)."""
+    return float(np.clip(rsrp_dbm, cfg.min_rsrp, cfg.max_rsrp))
 
 
 # ── SINR ───────────────────────────────────────────────────────────────────────
@@ -136,7 +166,7 @@ def compute_sinr(rsrp_serving_dbm: float,
     interferers      : list of (rsrp_dbm, load_fraction) for every neighbour cell
     """
     s_mw = 10.0 ** (rsrp_serving_dbm / 10.0)
-    n_mw = 10.0 ** (cfg.thermal_noise_dbm / 10.0)
+    n_mw = 10.0 ** (cfg.noise_re_dbm / 10.0)   # RSRP is per RE, so noise per RE
 
     i_mw = 0.0
     for rsrp_nb_dbm, load_frac in interferers:
@@ -177,6 +207,27 @@ def sinr_to_cqi(sinr_db: float) -> int:
     return 1
 
 
+# ── LOS state (spatially consistent) ──────────────────────────────────────────
+
+def update_los_latent(z: float, step_dist_m: float, rng: np.random.Generator,
+                      cfg: RadioConfig = RADIO) -> float:
+    """
+    AR(1) update of the latent Gaussian behind a link's LOS state.
+
+        z_new = ρ·z + √(1−ρ²)·N(0,1),   ρ = exp(−Δd / los_decorr_m)
+
+    A UE that does not move keeps its LOS state; one that moves ~50 m has
+    largely decorrelated.  Marginally z ~ N(0,1) at every step.
+    """
+    rho = math.exp(-step_dist_m / cfg.los_decorr_m)
+    return rho * z + math.sqrt(max(1.0 - rho ** 2, 0.0)) * rng.normal()
+
+
+def los_from_latent(z: float, d_m: float) -> bool:
+    """LOS if Φ(z) < P_LOS(d), so P(LOS) equals the 3GPP probability exactly."""
+    return 0.5 * (1.0 + math.erf(z / math.sqrt(2.0))) < p_los(d_m)
+
+
 # ── Shadow fading update ───────────────────────────────────────────────────────
 
 def update_shadow(current_db: float, step_dist_m: float,
@@ -207,41 +258,40 @@ def update_fast_fading(
     cfg: RadioConfig = RADIO,
 ) -> Tuple[float, float, float]:
     """
-    AR(1) complex Gaussian small-scale fading update.
+    Small-scale (fast) fading averaged over one 1-second measurement period.
 
-    State (ff_i, ff_q) evolves with spatial correlation ρ = exp(−Δd / d_corr).
-    For NLOS: amplitude follows Rayleigh distribution.
-    For LOS:  Rician K-factor adds a deterministic in-phase component.
+    The complex channel gain h = I + jQ (unit-variance I, Q) is Rayleigh for
+    NLOS links; for LOS links a Rician K-factor adds a fixed in-phase
+    component.  Samples decorrelate every half wavelength, so during a step
+    of length Δd the UE sees N = 1 + Δd/(λ/2) independent samples and reports
+    their mean power, which is what an L1 measurement averages:
 
-    The output fast_fade_db is normalised so that E[fast_fade_db] ≈ −1 dB
-    (Rayleigh average) and slightly positive for Rician LOS.
+        fast_fade_db = 10·log10( mean |h_n|² )      (E|h|² = 1, so ≈ 0 dB)
+
+    A pedestrian at 1 m/s averages ~14 samples (σ ≈ 1.2 dB); a vehicle at
+    15 m/s ~200 (σ ≈ 0.3 dB).  A UE that does not move keeps its last value.
+
+    State: ff_i holds the last averaged fading in dB (ff_q is unused and kept
+    for interface compatibility).
 
     Returns
     -------
     new_ff_i, new_ff_q, fast_fade_db
     """
-    rho        = math.exp(-step_dist_m / cfg.fast_decorr_m)
-    noise_std  = math.sqrt(max(1.0 - rho ** 2, 0.0))
+    if step_dist_m <= 0.0:
+        ff_db = float(np.clip(ff_i, cfg.ff_min_db, cfg.ff_max_db))
+        return ff_db, ff_q, ff_db
 
-    ff_i = rho * ff_i + rng.normal(0.0, noise_std)
-    ff_q = rho * ff_q + rng.normal(0.0, noise_std)
-
+    half_wavelength = 3e8 / (cfg.carrier_freq_ghz * 1e9) / 2.0
+    n   = int(min(cfg.ff_max_samples, 1 + step_dist_m / half_wavelength))
+    i_s = rng.normal(0.0, math.sqrt(0.5), n)       # E|h|² = 1
+    q_s = rng.normal(0.0, math.sqrt(0.5), n)
     if is_los:
-        # Rician: superimpose deterministic LOS component on I channel
-        K          = 10.0 ** (cfg.rician_k_db / 10.0)       # linear K-factor
-        scatter    = 1.0 / math.sqrt(K + 1.0)                # scatter amplitude scale
-        los_comp   = math.sqrt(K / (K + 1.0))                # LOS component
-        I_eff = ff_i * scatter + los_comp
-        Q_eff = ff_q * scatter
-    else:
-        # Rayleigh: normalise so each component has variance 0.5
-        I_eff = ff_i / math.sqrt(2.0)
-        Q_eff = ff_q / math.sqrt(2.0)
+        K   = 10.0 ** (cfg.rician_k_db / 10.0)
+        i_s = i_s / math.sqrt(K + 1.0) + math.sqrt(K / (K + 1.0))
+        q_s = q_s / math.sqrt(K + 1.0)
+    mean_power = float(np.mean(i_s ** 2 + q_s ** 2))
 
-    amplitude   = math.hypot(I_eff, Q_eff)
-    # Normalise by expected Rayleigh amplitude (makes NLOS ≈ 0 dB mean)
-    amp_norm    = amplitude / max(_RAYLEIGH_E_AMP, 1e-12)
-    ff_db       = 20.0 * math.log10(max(amp_norm, 1e-8))
-    ff_db       = float(np.clip(ff_db, cfg.ff_min_db, cfg.ff_max_db))
-
-    return ff_i, ff_q, ff_db
+    ff_db = float(np.clip(10.0 * math.log10(max(mean_power, 1e-8)),
+                          cfg.ff_min_db, cfg.ff_max_db))
+    return ff_db, ff_q, ff_db
